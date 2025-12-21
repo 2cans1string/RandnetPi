@@ -1,0 +1,125 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          dcnatrules
+# Required-Start:    $all
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:
+# Short-Description: dcnatrules initscript
+### END INIT INFO
+
+FILE_URL="https://shumania.ddns.net/dnat.txt"
+NAT_FILE="/var/tmp/dcnat.txt"
+NAT_FILE_TMP="/var/tmp/dcnat.tmp"
+
+download_file() {
+  echo "Attempting to download iptables rules file from $FILE_URL..."
+  
+  HTTP_STATUS=$(curl --connect-timeout 3 -s -o "$NAT_FILE_TMP" -w "%{http_code}" "$FILE_URL")
+ 
+  # IF HTTP ERROR CODE 
+  if [[ "$HTTP_STATUS" != "200" ]]; then
+    echo "Got $HTTP_STATUS trying to read from previous downloads"
+    rm -f $NAT_FILE_TMP
+    if [[ -s $NAT_FILE ]]; then
+      echo "Using existing local file $NAT_FILE instead."
+      return 0
+    else
+      echo "No local file available at $NAT_FILE. Cannot proceed."
+      exit 1
+    fi
+  fi
+
+  if [[ $? -ne 0 || ! -s "$NAT_FILE_TMP" ]]; then
+    echo "Failed to download file from $FILE_URL"
+    if [[ -s "$NAT_FILE" ]]; then
+      echo "Using existing local file $NAT_FILE instead."
+      return 0
+    else
+      echo "No local file available at $NAT_FILE. Cannot proceed."
+      exit 1
+    fi
+  fi
+
+  echo "Downloaded file successfully"
+  mv $NAT_FILE_TMP $NAT_FILE
+}
+
+start() {
+  echo "Starting dcnatrules service..."
+  download_file
+
+  while IFS=' ' read -r src_ip new_dest_ip dest_port dest_proto; 
+    do 
+      if [[ -n "$src_ip" && -n "$new_dest_ip" && -n "$dest_port" && -n "$dest_proto" ]]; then
+        if iptables -t nat -C PREROUTING -d "$src_ip" -p "$dest_proto" --dport "$dest_port" -j DNAT --to-destination "$new_dest_ip":"$dest_port" 2>/dev/null;
+        then
+          echo "Rule already exists  $src_ip -> $new_dest_ip:$dest_port:$dest_proto"
+        else
+          echo "Adding rule: $src_ip -> $new_dest_ip:$dest_port:$dest_proto"
+          iptables -t nat -A PREROUTING -d "$src_ip" -p "$dest_proto" --dport "$dest_port" -j DNAT --to-destination "$new_dest_ip":"$dest_port"
+        fi
+      elif [[ -n "$src_ip" && -n "$new_dest_ip" && -n "$dest_port" ]]; then 
+        if iptables -t nat -C PREROUTING -d "$src_ip" -p tcp --dport "$dest_port" -j DNAT --to-destination "$new_dest_ip":"$dest_port" 2>/dev/null;
+        then
+          echo "Rule already exists  $src_ip -> $new_dest_ip:$dest_port"
+        else
+          echo "Adding rule: $src_ip -> $new_dest_ip:$dest_port"
+          iptables -t nat -A PREROUTING -d "$src_ip" -p tcp --dport "$dest_port" -j DNAT --to-destination "$new_dest_ip":"$dest_port"
+        fi
+      elif [[ -n "$src_ip" && -n "$new_dest_ip" ]]; then
+        if iptables -t nat -C PREROUTING -d "$src_ip" -p tcp -j DNAT --to-destination "$new_dest_ip" 2>/dev/null;
+        then
+          echo "Rule already exists  $src_ip -> $new_dest_ip"
+        else
+          echo "Adding rule: $src_ip -> $new_dest_ip"
+          iptables -t nat -A PREROUTING -d "$src_ip" -p tcp -j DNAT --to-destination "$new_dest_ip"
+        fi
+      else
+        echo "Could not add rule"
+      fi
+  done < "$NAT_FILE"
+}
+
+stop() {
+  echo "Stopping dcnatrules service and removing iptables rules..."
+
+  if [[ ! -f "$NAT_FILE" || ! -s "$NAT_FILE" ]]; then
+    echo "No rules file found at $NAT_FILE or file empty, nothing to delete."
+    return
+  fi
+
+  while IFS=' ' read -r src_ip new_dest_ip dest_port dest_proto; do
+    if [[ -n "$src_ip" && -n "$new_dest_ip" && -n "$dest_port" && -n "$dest_proto" ]]; then
+      echo "Deleting rule: $src_ip -> $new_dest_ip:$dest_port:$dest_proto"
+      iptables -t nat -D PREROUTING -d "$src_ip" -p "$dest_proto" --dport "$dest_port" -j DNAT --to-destination "$new_dest_ip":"$dest_port"
+    elif [[ -n "$src_ip" && -n "$new_dest_ip" && -n "$dest_port" ]]; then
+      echo "Deleting rule: $src_ip -> $new_dest_ip:$dest_port"
+      iptables -t nat -D PREROUTING -d "$src_ip" -p tcp --dport "$dest_port" -j DNAT --to-destination "$new_dest_ip":"$dest_port"
+    elif [[ -n "$src_ip" && -n "$new_dest_ip" ]]; then
+      echo "Deleting rule: $src_ip -> $new_dest_ip"
+      iptables -t nat -D PREROUTING -d "$src_ip" -p tcp -j DNAT --to-destination "$new_dest_ip"
+    else
+      echo "Could not remove rule"
+    fi
+  done < "$NAT_FILE"
+}
+
+case "$1" in
+  start)
+    start
+    ;;
+  stop)
+    stop
+    ;;
+  restart)
+    stop
+    start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart}"
+    exit 1
+    ;;
+esac
+
+exit 0

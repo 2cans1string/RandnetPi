@@ -1,0 +1,102 @@
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides:          openvpn-client
+# Required-Start:    $network
+# Required-Stop:     $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Start OpenVPN client
+# Description:       Connects to a remote OpenVPN server at boot
+### END INIT INFO
+
+# Configuration
+CONF_DIR=/etc/openvpn/client
+DAEMON=/usr/sbin/openvpn
+PIDFILE=/var/run/openvpn-client.pid
+NAME=openvpn-client
+
+start() {
+    echo "Starting $NAME..."
+    if [ -f "$PIDFILE" ]; then
+        echo "$NAME is already running."
+        return 1
+    fi
+
+    # Check for new servers
+    if [ -s $CONF_DIR/server.list ]; then
+      mapfile -t hosts < $CONF_DIR/server.list
+    else
+      logger -t openvpn-client "Server list is unavailable or empty. Skipping VPN."
+      return 0
+    fi
+
+    declare -A ping_times
+
+    echo "Pinging hosts..."
+    for host in "${hosts[@]}"; do
+      # Ping once and extract average time (Linux)
+      # Change count (-c) or timeout (-W) as needed
+      ping_output=$(ping -4 -n -c 1 -W 1 "$host" 2>/dev/null)
+
+      # Extract avg time from ping statistics (Linux format)
+      avg_time=$(echo "$ping_output" | awk -F'/' '/^rtt/ { print $5 }')
+
+      if [[ -n "$avg_time" ]]; then
+        ping_times["$host"]=$avg_time
+      else
+        echo "$host -> unreachable"
+      fi
+    done
+
+    # Find host with the lowest ping
+    best_host=""
+    best_time=999999
+
+    for host in "${!ping_times[@]}"; do
+      time=${ping_times[$host]}
+      if (( $(echo "$time < $best_time" | bc -l) )); then
+        best_time=$time
+        best_host=$host
+      fi
+    done
+    
+    if [[ -n "$best_host" ]]; then
+      logger -t openvpn-client "Connecting with $best_host"
+      CONF_NAME="${best_host//./_}"
+      CONF=$CONF_DIR/$CONF_NAME.conf
+      $DAEMON --daemon --writepid $PIDFILE --config $CONF
+    else
+      echo "No reachable hosts"
+    fi
+}
+
+stop() {
+    echo "Stopping $NAME..."
+    if [ -f "$PIDFILE" ]; then
+        kill "$(cat $PIDFILE)"
+        rm -f $PIDFILE
+        echo "$NAME stopped."
+    else
+        echo "$NAME is not running."
+    fi
+}
+
+status() {
+    if [ -f "$PIDFILE" ]; then
+        echo "$NAME is running with PID $(cat $PIDFILE)."
+        return 0
+    else
+        echo "$NAME is not running."
+        return 1
+    fi
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    status) status ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
+
+exit 0

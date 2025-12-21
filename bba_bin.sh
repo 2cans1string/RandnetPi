@@ -51,7 +51,8 @@ echo "22 - 2K Series: NBA 2K2"
 echo "23 - 2K Series: NCAA 2K2"
 echo "24 - 2K Series: NFL 2K1"
 echo "25 - 2K Series: NFL 2K2"
-echo "26 - Reboot and restart standard DreamPi (modem)"
+echo "26 - F355 Challenge"
+echo "27 - Reboot and restart standard DreamPi (modem)"
 echo ""
 echo "Choose game number > "
     read n
@@ -68,9 +69,9 @@ if ! [[ $n =~ $chk ]]; then
   exit 0
 fi
 
-if [[ $n -gt 26 ]]; then
+if [[ $n -gt 27 ]]; then
   echo "Invalid option"
-elif [[ $n -eq 26 ]]; then
+elif [[ $n -eq 27 ]]; then
   sudo reboot
 else
   echo ""

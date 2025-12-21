@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-
+#dcnow.py_version=202512152004
 import threading
 import os
 import json
@@ -21,13 +21,11 @@ UPDATE_END_POINT = "/api/update/{mac_address}/"
 UPDATE_INTERVAL = 15
 
 CONFIGURATION_FILE = os.path.expanduser("~/.dreampi.json")
-
-# dcnow_stop = threading.Event()
+gameloft = False
 
 def scan_mac_address():
     mac = get_mac()
     return sha256(':'.join(("%012X" % mac)[i:i+2] for i in range(0, 12, 2))).hexdigest()
-
 
 class DreamcastNowThread(threading.Thread):
     def __init__(self, service):
@@ -39,20 +37,31 @@ class DreamcastNowThread(threading.Thread):
         def post_update():
             if not self._service._enabled:
                 return
-
-            lines = [ x for x in sh.tail("/var/log/syslog", "-n", "10", _iter=True) ]
+            global gameloft
+            lines = [ x for x in sh.tail("/var/log/syslog", "-n", "15", _iter=True) ]
             dns_query = None
             for line in lines[::-1]:
-                if "CONNECT" in line and "dreampi" in line:
-                    # Don't seek back past connection
-                    break
-
                 if "query[A]" in line:
                     # We did a DNS lookup, what was it?
                     remainder = line[line.find("query[A]") + len("query[A]"):].strip()
                     domain = remainder.split(" ", 1)[0].strip()
                     dns_query = sha256(domain).hexdigest()
-                    break
+                    
+                    #Send monaco/pod/speed just once - Begin
+                    if gameloft and "gameloft" in domain: ## already sent, do not send again.
+                        dns_query = None
+                        break
+                    if "gameloft" in domain: ## first read, send.
+                        gameloft = True
+                        logger.info("Domain sent to DCNow API: " + domain)
+                        break
+                    #Send monaco/pod/speed just once - End
+
+                    if "appspot" in domain:
+                        pass
+                    else:
+                        logger.info("Domain sent to DCNow API: " + domain)
+                        break
 
             user_agent = 'Mozilla/4.0 (compatible; MSIE 5.5; Windows NT), Dreamcast Now'
             header = { 'User-Agent' : user_agent }
@@ -70,8 +79,7 @@ class DreamcastNowThread(threading.Thread):
                 post_update()
             except:
                 logger.exception("Couldn't update Dreamcast Now!")
-            # time.sleep(UPDATE_INTERVAL)
-            dcnow_stop.wait(UPDATE_INTERVAL)
+            dcnow_run.wait(UPDATE_INTERVAL)
 
     def stop(self):
         self._running = False
@@ -88,6 +96,8 @@ class DreamcastNowService(object):
         logger.setLevel(logging.INFO)
         handler = logging.handlers.SysLogHandler(address='/dev/log')
         logger.addHandler(handler)
+        formatter = logging.Formatter('%(name)s[%(process)d]: %(message)s')
+        handler.setFormatter(formatter)
 
     def update_mac_address(self, dreamcast_ip):
         self._mac_address = scan_mac_address()
@@ -102,20 +112,20 @@ class DreamcastNowService(object):
                 self._enabled = content["enabled"]
 
     def go_online(self, dreamcast_ip):
-        logger.info("starting dcnow")
+        logger.propagate = False
         if not self._enabled:
             return
-        global dcnow_stop
-        dcnow_stop = threading.Event()
+        global dcnow_run
+        dcnow_run = threading.Event()
         self.update_mac_address(dreamcast_ip)
         self._thread = DreamcastNowThread(self)
         self._thread.start()
-        logger.info("dcnow started")
+        logger.info("DC Now Session Started")
 
     def go_offline(self):
-        logger.info("stopping dcnow")
-        global dcnow_stop
-        dcnow_stop.set()
+        global dcnow_run, gameloft
+        gameloft = False
+        dcnow_run.set()
         self._thread.stop()
         self._thread = None
-        logger.info("dcnow stopped")
+        logger.info("DC Now Session Ended")

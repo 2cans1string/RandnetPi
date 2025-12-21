@@ -210,6 +210,8 @@ def dns():
                 hosts = ["AUTHORIZE.VC-NFL2K1.GAMES.SEGA.COM"]
     elif var == 25:
                 hosts = ["AUTHORIZE.VC-NFL2K2.GAMES.SEGA.NET"]
+    elif var == 26:
+                hosts = ["f355.sega-rd2.com"]
     else:
 		hosts = ["google.com"]
 
