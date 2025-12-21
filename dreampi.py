@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-#dreampi.py_version=202402202004
+#dreampi.py_version=202512152004
 # from __future__ import absolute_import
 # from __future__ import print_function
 import atexit
@@ -19,66 +19,109 @@ import config_server
 import iptc
 import select
 import requests
+import netifaces
+import ipaddress
+import hashlib
 
 from dcnow import DreamcastNowService
 from port_forwarding import PortForwarding
-
 from datetime import datetime, timedelta
-def updater():
 
-    if os.path.isfile("/boot/noautoupdates.txt") == True:
+def updater():
+    if os.path.isfile("/boot/noautoupdates.txt"):
         logger.info("Dreampi script auto updates are disabled")
         return
-    netlink_script_url = "https://raw.githubusercontent.com/eaudunord/Netlink/latest/tunnel/netlink.py"
-    xband_script_url = "https://raw.githubusercontent.com/eaudunord/Netlink/latest/tunnel/xband.py"
-    checkScripts = [netlink_script_url,xband_script_url]
+
+    scripts = {
+        "netlink.py": "https://raw.githubusercontent.com/eaudunord/Netlink/dpi2/tunnel/netlink.py",
+        "dreampi.py": "https://raw.githubusercontent.com/Kazade/dreampi/master/dreampi.py",
+        "dcnow.py":   "https://raw.githubusercontent.com/Kazade/dreampi/master/dcnow.py",
+    }
+
     restartFlag = False
-    for script in checkScripts:
-        url = script
+    base_path = "/home/pi/dreampi/"
+
+    def sha256(data):
+        return hashlib.sha256(data).hexdigest()
+
+    def extract_version(data):
+        for line in data.splitlines():
+            try:
+                line = line.decode("utf-8")
+            except Exception:
+                continue
+            if "_version=" in line:
+                try:
+                    return int(line.split("version=")[1].strip())
+                except ValueError:
+                    return None
+        return None
+
+    for name, url in scripts.items():
+        local_script = os.path.join(base_path, name)
+
         try:
-            r=requests.get(url, stream = True)
+            # --- Fetch upstream file ---
+            r = requests.get(url, timeout=10)
             r.raise_for_status()
-            for line in r.iter_lines():
-                if b'_version' in line: 
-                    upstream_version = str(line.decode().split('version=')[1]).strip()
-                    break
-            local_script = "/home/pi/dreampi/"+script.split("/")[-1]
-            if os.path.isfile(local_script) == False:
-                local_version = None
-            else:
-                with open(local_script,'rb') as f:
-                    for line in f:
-                        if b'_version' in line:
-                            local_version = str(line.decode().split('version=')[1]).strip()
-                            break
-            if upstream_version == local_version:
-                logger.info('%s Up To Date' % local_script)
-            else:
-                r = requests.get(url)
-                r.raise_for_status()
-                with open(local_script,'wb') as f:
-                    f.write(r.content)
-                logger.info('%s Updated' % local_script)
-                if local_script == "dreampi.py":
-                    os.system("sudo chmod +x dreampi.py")
+            upstream_data = r.content
+
+            upstream_version = extract_version(upstream_data)
+
+            # --- Read local file (if present) ---
+            local_data = None
+            local_version = None
+
+            if os.path.isfile(local_script):
+                with open(local_script, "rb") as f:
+                    local_data = f.read()
+                local_version = extract_version(local_data)
+
+            # --- Safety checks ---
+            if upstream_version is None:
+                logger.info("%s has no upstream version; keeping local copy", name)
+                continue
+
+            if local_version is None:
+                logger.info("%s has no local version; skipping update for safety", name)
+                continue
+
+            if local_version >= upstream_version:
+                logger.info("%s is up to date (v%s)", name, local_version)
+                continue
+
+            # --- Hash check (avoid useless rewrites) ---
+            if local_data is not None and sha256(local_data) == sha256(upstream_data):
+                logger.info("%s unchanged", name)
+                continue
+
+            # --- Write update ---
+            with open(local_script, "wb") as f:
+                f.write(upstream_data)
+
+            if name == "dreampi.py":
+                os.system("sudo chmod +x " + local_script)
                 restartFlag = True
-            
-        except requests.exceptions.HTTPError:
-            logger.info("Couldn't check updates for: %s" % local_script)
-            continue
+
+            logger.info("%s updated (v%s to v%s)", name, local_version, upstream_version)
 
         except requests.exceptions.SSLError:
-            logger.info("SSL error while checking for updates. System time may need to be synced")
+            logger.info("SSL error while checking updates (check system time)")
             return
 
+        except requests.exceptions.RequestException as e:
+            logger.info("Failed to update %s: %s", name, e)
+            continue
+
     if restartFlag:
-        logger.info('Updated. Rebooting')
+        logger.info("Update applied. Rebooting.")
         os.system("sudo reboot")
 
 DNS_FILE = "https://dreamcast.online/dreampi/dreampi_dns.conf"
 
 
 logger = logging.getLogger("dreampi")
+logger.propagate = False
 
 
 def check_internet_connection():
@@ -111,6 +154,8 @@ def check_internet_connection():
 def restart_dnsmasq():
     subprocess.call("sudo service dnsmasq restart".split())
 
+def fetch_dreampi_updates():
+    subprocess.Popen(["python", "/home/pi/dreampi/updater/fetch_updates.py"])
 
 def update_dns_file():
     """
@@ -163,136 +208,230 @@ def dreampi_py_local_update():
     logger.info('Updated the dreampi.py from /boot/dpiupdate.py ... Rebooting')
     os.system("sudo reboot")
 
+#
+# IPTABLES RULES
+#
+
+def iptables_add_if_missing(cmd):
+    """
+    Add an iptables rule only if it does not already exist.
+    Supports -A (append) and -I (insert) commands.
+    
+    Example:
+        iptables_add_if_missing([
+            "iptables", "-t", "mangle", "-I", "FORWARD",
+            "-i", "ppp0", "-j", "TTL", "--ttl-set", "64"
+        ])
+    """
+
+    if "iptables" not in cmd[0]:
+        raise ValueError("Command must start with 'iptables'")
+
+    # Determine action type and position
+    try:
+        action_index = cmd.index("-A")
+        action_type = "-A"
+    except ValueError:
+        try:
+            action_index = cmd.index("-I")
+            action_type = "-I"
+        except ValueError:
+            raise ValueError("Command must contain '-A' or '-I'")
+
+    # Build check command by replacing -A/-I with -C
+    check_cmd = cmd[:]
+    check_cmd[action_index] = "-C"
+
+    try:
+        subprocess.check_call(check_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        logger.info("Rule already exists, skipping.")
+    except subprocess.CalledProcessError:
+        logger.info("Rule not found, adding it...")
+        subprocess.check_call(cmd)
+
+# Add SNAT and DNAT to the newly created interface
+def add_pseudo_interface_rules(interface, dc_ip, tun_ip):
+   
+    iptables_add_if_missing([
+        "iptables", "-t", "nat", "-I", "POSTROUTING",
+        "-o", interface, 
+        "-s", tun_ip, 
+        "-j", "SNAT",
+        "--to-source", dc_ip
+    ])
+
+    iptables_add_if_missing([
+        "iptables", "-t", "nat", "-I", "PREROUTING",
+        "-i", interface, 
+        "-d", dc_ip, 
+        "-j", "DNAT",
+        "--to-destination", tun_ip
+    ])
+ 
+    logger.info("DC Alias interface rules added")
+
+# Removes SNAT and DNAT to the newly created interface
+def remove_pseudo_interface_rules(interface, dc_ip, tun_ip):
+
+    subprocess.call([
+        "iptables", "-t", "nat", "-D", "POSTROUTING",
+        "-o", interface,
+        "-s", tun_ip,
+        "-j", "SNAT",
+        "--to-source", dc_ip
+    ])
+
+    subprocess.call([
+        "iptables", "-t", "nat", "-D", "PREROUTING",
+        "-i", interface,
+        "-d", dc_ip,
+        "-j", "DNAT",
+        "--to-destination", tun_ip
+    ])
+
+    logger.info("DC Alias interface rules removed")
+   
+# Block INPUT to tun0, only accept ICMP and RELATED,ESTABLISHED
+# Accept forward traffic from or to the tun0 to avoid userspace
+# fixes to be applied
+
+def add_vpn_rules(tun_ip):
+
+    iptables_add_if_missing([
+        "iptables", "-I", "INPUT",
+        "-i", "tun0", 
+        "-d", tun_ip, 
+        "-j", "DROP"
+    ])
+    
+    iptables_add_if_missing([
+        "iptables", "-I", "INPUT",
+        "-i", "tun0",    
+        "-d", tun_ip,
+        "-p", "icmp",
+        "-j", "ACCEPT"
+    ])
+    
+    iptables_add_if_missing([
+        "iptables", "-I", "INPUT",
+        "-i", "tun0",
+        "-m", "state",
+        "--state", "ESTABLISHED,RELATED",
+        "-j", "ACCEPT"
+    ])
+
+    iptables_add_if_missing([
+        "iptables", "-t", "mangle", "-I", "FORWARD",
+        "-i", "tun0",
+        "-j", "RETURN"
+    ])
+  
+    iptables_add_if_missing([
+        "iptables", "-t", "mangle", "-I", "FORWARD",
+        "-o", "tun0",
+        "-j", "RETURN"
+    ])
+ 
+    logger.info("DC VPN rules")
+
+def remove_vpn_rules(tun_ip):
+
+    subprocess.call([
+        "iptables", "-D", "INPUT",
+        "-i", "tun0",
+        "-d", tun_ip,
+        "-j", "DROP"
+    ])
+  
+    subprocess.call([
+        "iptables", "-D", "INPUT",
+        "-i", "tun0",
+        "-d", tun_ip,
+        "-p", "icmp",
+        "-j", "ACCEPT"
+    ])
+  
+    subprocess.call([
+        "iptables", "-D", "INPUT",
+        "-i", "tun0",
+        "-m", "state",
+        "--state", "ESTABLISHED,RELATED",
+        "-j", "ACCEPT"
+    ])
+
+    subprocess.call([
+        "iptables", "-t", "mangle", "-D", "FORWARD",
+        "-i", "tun0",
+        "-j", "RETURN"
+    ])
+ 
+    subprocess.call([
+        "iptables", "-t", "mangle", "-D", "FORWARD",
+        "-o", "tun0",
+        "-j", "RETURN"
+    ])
+
+    logger.info("DC VPN rules REMOVED")
+
 # Increase the TTL in the IP HDR from 30 to 64
 def add_increased_ttl():
-    table = iptc.Table(iptc.Table.MANGLE)
-    chain = iptc.Chain(table, "PREROUTING")
+    iptables_add_if_missing([
+        "iptables", "-t", "mangle", "-A", "FORWARD",
+        "-i", "ppp0",
+        "-j", "TTL", "--ttl-set", "64"
+    ])
 
-    rule = iptc.Rule()
-    rule.in_interface = "ppp0"
-    rule.create_target("TTL").ttl_set = str(64)
+def remove_increased_ttl():
+    subprocess.call([
+        "iptables", "-t", "mangle", "-D", "FORWARD",
+        "-i", "ppp0", 
+        "-j", "TTL", "--ttl-set", "64"
+    ])
 
-    chain.insert_rule(rule)
+# Prevent games like PowerSmash to send double SYN packets
+def add_syn_check():
+    iptables_add_if_missing([
+        "iptables", "-A", "FORWARD",
+        "-p", "tcp", "--syn", "--sport", "3200:3205", "-m", "recent", "--name", "syncheck",
+        "--rsource", "--rdest", "--update", "--seconds", "1", "--hitcount", "1", "-j", "DROP"
+    ])
 
-    logger.info("DC TTL increased from 30 to 64")
-    return rule
-
-def remove_increased_ttl(ttl_rule):
-    if ttl_rule:
-        table = iptc.Table(iptc.Table.MANGLE)
-        chain = iptc.Chain(table, "PREROUTING")
-        chain.delete_rule(ttl_rule)
-        logger.info("DC TTL removed")
-
-# Add additional DNAT rules
-def start_dnat_rules():
-    rules = []
-
-    def fetch_replacement_ips():
-        url = "https://shumania.ddns.net/dnat.txt"
-        try:
-            r = requests.get(url, verify=False)
-            r.raise_for_status()
-            return r.text.strip()
-        except requests.exceptions.HTTPError:
-            logging.info(
-            "HTTP error; will skip adding DNAT rules"
-            )
-            return None
-        except requests.exceptions.Timeout:
-            logging.info(
-            "Request timed out; will skip adding DNAT rules"
-            )
-            return None
-        except requests.exceptions.SSLError:
-            logging.info(
-            "SSL error; will skip adding DNAT rules"
-            )
-            return None
-
-    data = fetch_replacement_ips()
-
-    if data is None:
-        logger.info("No DNAT rules added")
-        return None
-
-    for ips in data.splitlines():
-        ip = ips.split()
-        
-        if ip[0] is None:
-            logger.info("Missing SRC in DNAT rule - SKIP")
-            return None
-
-        if ip[1] is None:
-            logger.info("Missing DST in DNAT rule - SKIP")
-            return None
- 
-        table = iptc.Table(iptc.Table.NAT)
-        chain = iptc.Chain(table, "PREROUTING")
-
-        rule = iptc.Rule()
-        rule.protocol = "tcp"
-        rule.dst = ip[0]
-        rule.create_target("DNAT")
-        rule.target.to_destination = ip[1]
-
-        chain.append_rule(rule)
-        logger.info("DNAT rule appended %s -> %s",ip[0],ip[1])
-        rules.append(rule)
-    return rules
-
-def remove_dnat_rule(drule):
-    if drule:
-        table = iptc.Table(iptc.Table.NAT)
-        chain = iptc.Chain(table, "PREROUTING")
-        chain.delete_rule(drule)
-        logger.info("DNAT rule removed")
-
-def start_afo_patching():
-
-    def fetch_replacement_ip():
-        url = "http://dreamcast.online/afo.txt"
-        try:
-            r = requests.get(url)
-            r.raise_for_status()
-            afo_IP = r.text.strip()
-            return afo_IP
-        except requests.exceptions.HTTPError:
-            return None
-
-    replacement = fetch_replacement_ip()
-
-    if replacement is None:
-        logger.warning("Not starting AFO patch as couldn't get IP from server")
-        return
-
-    table = iptc.Table(iptc.Table.NAT)
-    chain = iptc.Chain(table, "PREROUTING")
-
-    rule = iptc.Rule()
-    rule.protocol = "tcp"
-    rule.dst = "63.251.242.131"
-    rule.create_target("DNAT")
-    rule.target.to_destination = replacement
-
-    chain.append_rule(rule)
-
-    logger.info("AFO routing enabled")
-    return rule
+    iptables_add_if_missing([
+        "iptables", "-A", "FORWARD",
+        "-p", "tcp", "--syn", "--sport", "3200:3205", "-m", "recent", "--name", "syncheck",
+        "--rsource", "--rdest", "--set"
+    ])
 
 
-def stop_afo_patching(afo_patcher_rule):
-    if afo_patcher_rule:
-        table = iptc.Table(iptc.Table.NAT)
-        chain = iptc.Chain(table, "PREROUTING")
-        chain.delete_rule(afo_patcher_rule)
-        logger.info("AFO routing disabled")
+def remove_syn_check():
+    subprocess.call([
+        "iptables", "-D", "FORWARD",
+        "-p", "tcp", "--syn", "--sport", "3200:3205", "-m", "recent", "--name", "syncheck",
+        "--rsource", "--rdest", "--update", "--seconds", "1", "--hitcount", "1", "-j", "DROP"
+    ])
+
+    subprocess.call([
+        "iptables", "-D", "FORWARD",
+        "-p", "tcp", "--syn", "--sport", "3200:3205", "-m", "recent", "--name", "syncheck",
+        "--rsource", "--rdest", "--set"
+    ])
+
+def is_service_running(name):
+    try:
+        # Run pgrep -f process_name
+        subprocess.check_call(['pgrep', '-f', name],
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+        return True
+    except subprocess.CalledProcessError:
+        # pgrep returns non-zero if no process is found
+        return False
 
 def start_service(name):
     try:
-        logger.info("Starting {} process - Thanks ShuoumaDC!".format(name))
+        logger.info("Starting {} process".format(name))
         with open(os.devnull, "wb") as devnull:
-            subprocess.check_call(["sudo", "service", name, "start"], stdout=devnull)
+            subprocess.check_call(["sudo", "systemctl", "start", name], stdout=devnull)
     except (subprocess.CalledProcessError, IOError):
         logging.warning("Unable to start the {} process".format(name))
 
@@ -301,11 +440,24 @@ def stop_service(name):
     try:
         logger.info("Stopping {} process".format(name))
         with open(os.devnull, "wb") as devnull:
-            subprocess.check_call(["sudo", "service", name, "stop"], stdout=devnull)
+            subprocess.check_call(["sudo", "systemctl", "stop", name], stdout=devnull)
     except (subprocess.CalledProcessError, IOError):
         logging.warning("Unable to stop the {} process".format(name))
 
+#
+# IP and INTERFACE functions
+#
 
+def get_ip_address(interface):
+    try:
+        addrs = netifaces.ifaddresses(interface)
+        if netifaces.AF_INET in addrs:
+            ip = addrs[netifaces.AF_INET][0]['addr']
+            return ip
+        else:
+            return None  # No IPv4 address
+    except ValueError:
+        return None  # Interface not found
 def get_default_iface_name_linux():
     route = "/proc/net/route"
     with open(route) as f:
@@ -322,7 +474,7 @@ def get_default_iface_name_linux():
 def ip_exists(ip, iface):
     command = ["arp", "-a", "-i", iface]
     output = subprocess.check_output(command).decode()
-    if ("(%s)" % ip) in output:
+    if ("(%s)" % ip) in output and 'incomplete' not in output:
         logger.info("IP existed at %s", ip)
         return True
     else:
@@ -344,6 +496,45 @@ def find_next_unused_ip(start):
 
     raise Exception("Unable to find a free IP on the network")
 
+def create_alias_interface(dc_ip, tun_ip):
+    interface = get_default_iface_name_linux()
+    iface_alias = interface + ":1"
+    ip_addr = dc_ip + "/32"
+
+    try:
+        with open(os.devnull, "wb") as devnull:
+            subprocess.check_call(["sudo", "ip", "addr", "add", ip_addr, "dev", interface, "label", iface_alias], stdout=devnull)
+        logger.info("Created alias interface %s with IP %s", iface_alias, ip_addr)
+    except subprocess.CalledProcessError as e:
+        logging.exception("Error: Could not create alias interface")
+
+    add_pseudo_interface_rules(interface, dc_ip, tun_ip)
+
+def remove_alias_interface():
+    interface = get_default_iface_name_linux()
+    iface_alias = interface + ":1"
+    dc_ip = get_ip_address(iface_alias)
+    tun_ip =  get_ip_address("tun0")
+
+    try:
+        with open(os.devnull, "wb") as devnull:
+            subprocess.check_call(["sudo", "ip", "addr", "flush", "dev", interface, "label", iface_alias], stdout=devnull)
+        logger.info("Flushed alias interface %s", iface_alias)
+    except subprocess.CalledProcessError as e:
+        logging.exception("Error: Could not remove alias interface")
+
+    if dc_ip is not None:
+        try:
+            with open(os.devnull, "wb") as devnull:
+                subprocess.check_call(["sudo", "arp", "-d", dc_ip], stdout=devnull)
+            logger.info("Removed ARP entry for %s", dc_ip)
+        except subprocess.CalledProcessError:
+            logging.error("No ARP entry to remove for %s", dc_ip)
+
+    if dc_ip is not None and tun_ip is not None:
+        tun_ip_obj = ipaddress.IPv4Address(unicode(tun_ip,'utf-8'))
+        tun_dc_ip = tun_ip_obj + 1
+        remove_pseudo_interface_rules(interface, dc_ip, str(tun_dc_ip))
 
 def autoconfigure_ppp(device, speed):
     """
@@ -364,20 +555,32 @@ def autoconfigure_ppp(device, speed):
     OPTIONS_TEMPLATE = "debug\n" "ms-dns {this_ip}\n" "proxyarp\n" "ktune\n" "noccp\n"
 
     PAP_SECRETS_TEMPLATE = "# Modded from dreampi.py\n" "# INBOUND connections\n" '*       *       ""      *' "\n"
-
+     
+    tun_ip =  get_ip_address("tun0")
     this_ip = find_next_unused_ip(".".join(subnet) + ".100")
     dreamcast_ip = find_next_unused_ip(this_ip)
 
-    logger.info("Dreamcast IP: {}".format(dreamcast_ip))
-
-    peers_content = PEERS_TEMPLATE.format(
-        device=device, device_speed=speed, this_ip=this_ip, dc_ip=dreamcast_ip
-    )
+    # Check if VPN is up and set IPs accordingly
+    if tun_ip is not None:
+        tun_ip_obj = ipaddress.IPv4Address(unicode(tun_ip,'utf-8'))
+        tun_dc_ip = tun_ip_obj + 1 
+        tun_this_ip = tun_dc_ip + 1
+        add_vpn_rules(tun_ip)
+        logger.info("TUN detected: tun0: %s ppp0: %s:%s", tun_ip, str(tun_this_ip), str(tun_dc_ip))
+        
+        peers_content = PEERS_TEMPLATE.format(
+            device=device, device_speed=speed, this_ip=tun_this_ip, dc_ip=tun_dc_ip
+        )
+        options_content = OPTIONS_TEMPLATE.format(this_ip=dreamcast_ip)
+    else:
+        logger.info("Dreamcast IP: {}".format(dreamcast_ip))
+        peers_content = PEERS_TEMPLATE.format(
+            device=device, device_speed=speed, this_ip=this_ip, dc_ip=dreamcast_ip
+        )
+        options_content = OPTIONS_TEMPLATE.format(this_ip=this_ip)
 
     with open("/etc/ppp/peers/dreamcast", "w") as f:
         f.write(peers_content)
-
-    options_content = OPTIONS_TEMPLATE.format(this_ip=this_ip)
 
     with open("/etc/ppp/options", "w") as f:
         f.write(options_content)
@@ -391,7 +594,7 @@ def autoconfigure_ppp(device, speed):
 
 
 ENABLE_SPEED_DETECTION = (
-    False
+    True
 )  # Set this to true if you want to use wvdialconf for device detection
 
 
@@ -420,7 +623,7 @@ def detect_device_and_speed():
 
                 # Many modems report speeds higher than they can handle so we cap
                 # to 56k
-                return device, min(speed, MAX_SPEED)
+                return "/dev/"+device, min(speed, MAX_SPEED)
         else:
             logger.info("No device detected")
 
@@ -545,7 +748,7 @@ class Modem(object):
 
         logger.info("Opening serial interface to {}".format(self._device))
         self._serial = serial.Serial(
-            self._device, self._speed, timeout=0
+            self._device, self._speed, timeout=0, exclusive=True
         )
         return self._serial
     
@@ -554,7 +757,7 @@ class Modem(object):
             self.disconnect()
         logger.info("Opening serial interface to {}".format(self._device))
         self._serial = serial.Serial(
-            self._device, speed, timeout=timeout, rtscts = rtscts
+            self._device, speed, timeout=timeout, rtscts = rtscts, exclusive=True
         )
 
     def disconnect(self):
@@ -675,7 +878,7 @@ class Modem(object):
             final_command = ("%s\r\n" % command).encode() 
 
         self._serial.write(final_command)
-        logger.info('Command: %s' % final_command.decode())
+        logger.info('Command: %s' % command.decode())
 
         start = time.time()
         line = b""
@@ -751,31 +954,9 @@ class GracefulKiller(object):
         logging.warning("Received signal: %s", signum)
         self.kill_now = True
 
-def do_netlink(side,dial_string,modem,saturn=True):
-    # ser = serial.Serial(device_and_speed[0], device_and_speed[1], timeout=0.005)
-    state, opponent  = netlink.netlink_setup(side,dial_string,modem)
-    if state == "failed":
-        for i in range(3):
-            modem._serial.write(b'+')
-            time.sleep(0.2)
-        time.sleep(4)
-        modem.send_command(b'ATH0')
-        return
-    if saturn == False:
-        netlink.kddi_exchange(side,state,opponent,ser=modem._serial)
-    else:
-        netlink.netlink_exchange(side,state,opponent,ser=modem._serial)
-
 
 def process():
-    
-    xbandnums = ["18002071194","19209492263","0120717360","0355703001"]
-    
-    xbandMatching = False
-    xbandTimer = None
-    xbandInit = False
-    openXband = False
-
+    import netlink
     killer = GracefulKiller()
 
     dial_tone_enabled = "--disable-dial-tone" not in sys.argv
@@ -802,9 +983,29 @@ def process():
             logger.warn("Unable to find a modem device. Waiting...")
 
         time.sleep(5)
+    
+    #
+    # We have internet start openvpn client here
+    #
+    start_service("openvpn-client")
+    tun_ip, tun_retries = None, 5
+    logger.info("Waiting for tun to get established")
+    while tun_ip is None:
+        tun_ip = get_ip_address("tun0")
+        if tun_ip:
+            break
+        else:
+          tun_retries -= 1
+          if tun_retries == 0:
+              logger.warn("Unable to find tun device. Giving up")
+              break
+          time.sleep(3)
+
+    # Check if there is any updates, we know the VPN is up now
+    # Will only download files not execute them, so dont worry
+    fetch_dreampi_updates()
 
     modem = Modem(device_and_speed[0], device_and_speed[1], dial_tone_enabled)
-
     dreamcast_ip = autoconfigure_ppp(modem.device_name, modem.device_speed)
 
     # Get a port forwarding object, now that we know the DC IP.
@@ -821,116 +1022,43 @@ def process():
         modem.start_dial_tone()
 
     time_digit_heard = None
-    global saturn
-    saturn = True
+    
+    netlink = netlink.Netlink(modem)
     dcnow = DreamcastNowService()
     while True:
         if killer.kill_now:
             break
 
+        netlink.poll()
+
         now = datetime.now()
 
-        if mode == "LISTENING":
-            
-            if xbandMatching == True:
-                if xbandInit == False:
-                    xband.xbandInit()
-                    xbandInit = True
-                if time.time() - xbandTimer > 900: #Listen for incoming connections for 15 minutes
-                    xbandMatching = False
-                    xband.closeXband()
-                    openXband = False
-                    continue
-                if openXband == False:
-                    xband.openXband()
-                    openXband = True
-                xbandResult,opponent = xband.xbandListen(modem)
-                if xbandResult == "connected":
-                    xband.netlink_exchange("waiting","connected",opponent,ser=modem._serial)
-                    logger.info("Xband Disconnected")
-                    mode = "LISTENING"
-                    modem.connect()
-                    modem.start_dial_tone()
-                    xbandMatching = False
-                    xband.closeXband()
-                    openXband = False
-                
+        if mode == "LISTENING":                
             
             modem.update()
-            char = modem._serial.read(1)
-            char = char.strip()
+            char = modem._serial.read(1).strip().decode()
             if not char:
                 continue
 
             if ord(char) == 16:
                 # DLE character
                 try:
-                    parsed = netlink.digit_parser(modem)
-                    if parsed == "nada":
-                        pass
-                    elif isinstance(parsed,dict):
-                        client = parsed['client']
-                        dial_string = parsed['dial_string']
-                        side = parsed['side']
+                    parsed = netlink.digit_parser()
+                    client = parsed['client']
+                    dial_string = parsed['dial_string']
+                    if client != "idle":
                         logger.info("Heard: %s" % dial_string)
-                        
-                        if dial_string in xbandnums:
-                            logger.info("Calling Xband server")
-                            client = "xband"
-                            mode = "XBAND ANSWERING"
-
-                        elif dial_string == "00":
-                            side = "waiting"
-                            client = "direct_dial"
-                            saturn = False
-                        elif dial_string[0:3] == "859":
-                            try:
-                                kddi_opponent = dial_string
-                                kddi_lookup = "https://dial.redreamcast.net/?phoneNumber=%s" % kddi_opponent
-                                response = requests.get(kddi_lookup)
-                                response.raise_for_status()
-                                ip = response.text
-                                if len(ip) == 0:
-                                    pass
-                                else:
-                                    dial_string = ip
-                                    logger.info(dial_string)
-                                    saturn = False
-                                    side = "calling"
-                                    client = "direct_dial"
-                                    time.sleep(7)
-                            except requests.exceptions.HTTPError:
-                                pass
-                        elif len(dial_string.split('*')) == 5 and dial_string.split('*')[-1] == "1":
-                            oppIP = '.'.join(dial_string.split('*')[0:4])
-                            client = "xband"
-                            mode = "NETLINK ANSWERING"
-                            side = "calling"
-                        
-                       
-                        if client == "direct_dial":
-                            mode = "NETLINK ANSWERING"
-                        elif client == "xband":
-                            pass
-                        else:
-                            mode = "ANSWERING"
+                        logger.info("Mode detected: %s" % client)
+                    if client == 'idle':
+                        pass
+                    elif client == 'PPP':
+                        mode = "ANSWERING"
                         modem.stop_dial_tone()
                         time_digit_heard = now
                 except (TypeError, ValueError):
+                    logger.info("error")
                     pass
                 
-        elif mode == "XBAND ANSWERING":
-            # print("xband answering")
-            if (now - time_digit_heard).total_seconds() > 8.0:
-                time_digit_heard = None
-                modem.query_modem("ATA", timeout=60, response = "CONNECT")
-                xband.xbandServer(modem)
-                mode = "LISTENING"
-                modem.connect()
-                modem.start_dial_tone()
-                xbandMatching = True
-                xbandTimer = time.time()
-
         elif mode == "ANSWERING":
             if time_digit_heard is None:
                 raise Exception("Impossible code path")
@@ -940,54 +1068,30 @@ def process():
                 modem.disconnect()
                 mode = "CONNECTED"
 
-        elif mode == "NETLINK ANSWERING":
-            if (now - time_digit_heard).total_seconds() > 8.0:
-                time_digit_heard = None
-                
-                try:
-                    if client == "xband":
-                        xband.init_xband(modem)
-                        result = xband.ringPhone(oppIP,modem)
-                        if result == "hangup":
-                            mode = "LISTENING"
-                            modem.connect()
-                            modem.start_dial_tone()
-                        else:
-                            mode = "NETLINK_CONNECTED"
-                    else:
-                        modem.connect_netlink(speed=57600,timeout=0.01,rtscts = True) #non-blocking version
-                        modem.query_modem(b"AT%E0\V1")
-                        if saturn:
-                            modem.query_modem(b'AT%C0\N3')
-                            modem.query_modem(b'AT+MS=V32b,1,14400,14400,14400,14400')
-                        modem.query_modem(b"ATA", timeout=120, response = "CONNECT")
-                        mode = "NETLINK_CONNECTED"
-                except IOError:
-                    modem.connect()
-                    mode = "LISTENING"
-                    modem.start_dial_tone()
         elif mode == "CONNECTED":
+            tun_ip =  get_ip_address("tun0")
+            if tun_ip is not None:
+                tun_ip_obj = ipaddress.IPv4Address(unicode(tun_ip,'utf-8'))
+                tun_dc_ip = tun_ip_obj + 1
+                create_alias_interface(dreamcast_ip, str(tun_dc_ip))
+
             dcnow.go_online(dreamcast_ip)
             
             for line in sh.tail("-f", "/var/log/messages", "-n", "1", _iter=True):
                 if "pppd" in line and "Exit" in line:#wait for pppd to execute the ip-down script
                     logger.info("Detected modem hang up, going back to listening")
                     break
+            
+            # Flush the IP on the alias interface 
+            remove_alias_interface()
+            
             dcnow.go_offline() #changed dcnow to wait 15 seconds for event instead of sleeping. Should be faster.
             mode = "LISTENING"
             # modem = Modem(device_and_speed[0], device_and_speed[1], dial_tone_enabled)
             modem.connect()
             if dial_tone_enabled:
                 modem.start_dial_tone()
-        elif mode == "NETLINK_CONNECTED":
-            if client == "xband":
-                xband.netlink_exchange("calling","connected",oppIP,ser=modem._serial)
-            else:
-                do_netlink(side,dial_string,modem,saturn=saturn)
-            logger.info("Netlink Disconnected")
-            mode = "LISTENING"
-            modem.connect()
-            modem.start_dial_tone()
+        
     if port_forwarding is not None:
         port_forwarding.delete_all()
     return 0
@@ -1010,10 +1114,6 @@ def enable_prom_mode_on_wlan0():
 
 
 def main():
-    afo_patcher_rule = None
-    ttl_rule = None
-    dnat_rules = []
-
     try:
         # Don't do anything until there is an internet connection
         while not check_internet_connection():
@@ -1022,15 +1122,7 @@ def main():
         
         #try auto updates /disabled for now
         updater()
-        global xband
-        global netlink
-        try:
-            import xband as xband
-            import netlink as netlink
-        except ImportError:
-            logger.info("couldn't import xband or netlink modules")
-
-
+   
         # Dreampi local update check
         dreampi_py_local_update()
 
@@ -1042,15 +1134,18 @@ def main():
 
         # Just make sure everything is fine
         restart_dnsmasq()
-
+ 
         config_server.start()
-        afo_patcher_rule = start_afo_patching()
-        dnat_rules = start_dnat_rules()
-        ttl_rule = add_increased_ttl()
+        
+        add_increased_ttl()
+        add_syn_check()
+
         start_service("dcvoip")
         start_service("dcgamespy")
         start_service("dc2k2")
         start_service("dcdaytona")
+        start_service("dcnatrules")  
+ 
         return process()
     except:
         logger.exception("Something went wrong...")
@@ -1060,13 +1155,17 @@ def main():
         stop_service("dcgamespy")
         stop_service("dcvoip")
         stop_service("dcdaytona")
-        if afo_patcher_rule is not None:
-            stop_afo_patching(afo_patcher_rule)
-        if ttl_rule is not None:
-            remove_increased_ttl(ttl_rule)
-        if dnat_rules is not None:
-            for drule in dnat_rules:
-                remove_dnat_rule(drule)
+        stop_service("dcnatrules")
+        
+        tun_ip = get_ip_address("tun0")  
+        stop_service("openvpn-client")
+        remove_alias_interface()
+       
+        if tun_ip is not None:
+            remove_vpn_rules(tun_ip)      
+
+        remove_increased_ttl()
+        remove_syn_check()
 
         config_server.stop()
         logger.info("Dreampi quit successfully")

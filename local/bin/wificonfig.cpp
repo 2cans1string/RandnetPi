@@ -2,18 +2,25 @@
 #include <string>
 #include <cstdlib>
 #include <fstream>
+#include <sys/types.h>
+#include <sys/unistd.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <stdio.h>
 using namespace std;
 
-void AddWifiNetwork(string SSID, string WifiPass)
+void AddWifiNetwork(string SSID, string WifiPass, string CountryCode)
 {
 	
-	ofstream WPASupplicant("/etc/wpa_supplicant/wpa_supplicant.conf", ios_base::app);
+	ofstream WPASupplicant("/etc/wpa_supplicant/wpa_supplicant.conf", std::ios::out);
 	if (WPASupplicant.is_open())
 	{			
-		WPASupplicant << endl << "network={" << endl;
+                WPASupplicant << "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev" << endl;
+		WPASupplicant << "update_config=1\n" << endl;
+                WPASupplicant << "network={" << endl;
 		WPASupplicant << "ssid=\"" + SSID + "\"" << endl;
 		WPASupplicant << "psk=\"" + WifiPass + "\"" << endl;
-		WPASupplicant << "}";
+		WPASupplicant << "}\n";
 		WPASupplicant.close();
 		cout << endl;
 		cout << "The wireless network '" + SSID + "' " + "has been added." << endl;		
@@ -28,13 +35,15 @@ void AddWifiNetwork(string SSID, string WifiPass)
 void AddOpenWifiNetwork(string SSID)
 {
 	
-	ofstream WPASupplicant("/etc/wpa_supplicant/wpa_supplicant.conf", ios_base::app);
+	ofstream WPASupplicant("/etc/wpa_supplicant/wpa_supplicant.conf", std::ios::out);
 	if (WPASupplicant.is_open())
-	{			
-		WPASupplicant << endl << "network={" << endl;
+	{	
+                WPASupplicant << "ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev" << endl;
+                WPASupplicant << "update_config=1\n" << endl;		
+		WPASupplicant << "network={" << endl;
 		WPASupplicant << "ssid=\"" + SSID + "\"" << endl;
 		WPASupplicant << "key_mgmt=NONE" << endl;
-		WPASupplicant << "}";
+		WPASupplicant << "}\n";
 		WPASupplicant.close();
 		cout << endl;
 		cout << "The wireless network '" + SSID + "' " + "has been added." << endl;		
@@ -44,6 +53,24 @@ void AddOpenWifiNetwork(string SSID)
 		cout << "Unable to open the network config file. Please run 'sudo wificonfig' and try again." << endl; 
 	}
 	
+}
+
+void AddCountryCode(string CountryCode)
+{
+
+	ofstream WPASupplicant("/etc/wpa_supplicant/wpa_supplicant.conf", ios_base::app);
+	if (WPASupplicant.is_open())
+	{			
+		WPASupplicant << endl << "country=" + CountryCode << endl;
+		WPASupplicant.close();
+		cout << endl;
+		cout << "The Country Code '" + CountryCode + "' " + "has been added." << endl;		
+	}
+	else
+	{
+		cout << "Unable to open the network config file. Please run 'sudo wificonfig' and try again." << endl; 
+	}
+
 }
 
 void EnableWifi()
@@ -133,42 +160,78 @@ void EraseNetworks()
 	}	
 }
 
+void DisplayIP()
+{
+
+system("hostname -I");
+
+}
+
 int main(int argc, char *argv[])
 {
 	int Selection;
 	string UserInput;
 	string WifiPass;
 	string SSID;
-	
-	cout << "Welcome to the Wi-Fi configuration wizard!" << endl << endl;
+	string CountryCode;
+
+	cout << endl;
+	cout << "Welcome to the Wi-Fi configuration wizard!" << endl;
+
+	cout << endl;
+	cout << "Your IP address is:" << endl;
+	DisplayIP();
+	cout << endl;
+
 	cout << "Please select an option:" << endl;
 	cout << "[1] Enable Wi-Fi" << endl;
 	cout << "[2] Disable Wi-Fi" << endl;
 	cout << "[3] Add Wi-Fi Network" << endl;
-	cout << "[4] Remove Wi-Fi Networks" << endl;
-	cout << "[5] Exit" << endl;
+	cout << "[4] Set Country Code" << endl;
+	cout << "[5] Remove Wi-Fi Networks" << endl;
+	cout << "[6] Exit" << endl;
 	
-	cin >> Selection;
+selectcc3:		
+		cin >> Selection;
+		//Check to make sure cin is valid (i.e. an integer)
+		if (!cin) {
+     		cout << "Invalid selection. Please type a number between 1 and 6." << endl;
+			cin.clear();
+    		cin.ignore();
+			goto selectcc3;
+		}
 		
 	switch (Selection)
 	{
+
+	//User selected "Enable Wi-Fi"
 	case 1:
 		
 		EnableWifi();
 		break;
 		
+	//User selected "Disable Wi-Fi"	
 	case 2:
 		
 		DisableWifi();
 		break;
 		
+	//User selected "Add Wi-Fi Network"	
 	case 3:
 		
 		cout << "Please select a network type:" << endl;
 		cout << "[1] Secured (has password)" << endl;
-		cout << "[2] Open (no password)" << endl;		
-		
+		cout << "[2] Open (no password)" << endl;
+
+selectcc2:		
 		cin >> Selection;
+		//Check to make sure cin is valid (i.e. an integer)
+		if (!cin) {
+     		cout << "Invalid selection. Please type either 1 or 2." << endl;
+			cin.clear();
+    		cin.ignore();
+			goto selectcc2;
+		}
 		
 		switch (Selection)
 		{
@@ -176,18 +239,19 @@ int main(int argc, char *argv[])
 		case 1:
 			
 enterssid:
-			cout << "Enter Network Name (SSID): ";
-			cin >> SSID;		
-			cout << "Enter password: ";
-			cin >> WifiPass;
-			cout << endl;
+			cin.ignore();
+			cout << "Enter Network Name (SSID): " << endl;
+			getline (cin,SSID);		
+			cout << "Enter Password: " << endl;
+			getline (cin, WifiPass);
+
 confirm:	
 			cout << "Is the above information correct? Y/N ";
 			cin >> UserInput;
 		
 			if (UserInput == "Y" || UserInput == "y")
 			{			
-				AddWifiNetwork(SSID, WifiPass);
+				AddWifiNetwork(SSID, WifiPass, CountryCode);
 				EnableWifi();
 			}
 			else if (UserInput == "N" || UserInput == "n")
@@ -205,9 +269,10 @@ confirm:
 		case 2:
 			
 enterssid2:
-			cout << "Enter Network Name (SSID): ";
-			cin >> SSID;		
-			cout << endl;
+			cin.ignore();
+			cout << "Enter Network Name (SSID): " << endl;
+			getline (cin,SSID);		
+
 confirm2:	
 			cout << "Is the above information correct? Y/N ";
 			cin >> UserInput;
@@ -227,11 +292,85 @@ confirm2:
 				cout << endl;
 				goto confirm2;
 			}
-			
+			break;
+
+		default:
+
+			cout << "Invalid selection. Please type either 1 or 2." << endl;
+			cin.clear();
+    		cin.ignore();
+			goto selectcc2;
+
 		}		
 		break;
 		
+	//User selected "Set Country Code"
 	case 4:
+
+		cout << "Please select your Country Code:" << endl;
+		cout << "[1] United States" << endl;
+		cout << "[2] United Kingdom" << endl;
+		cout << "[3] France" << endl;
+		cout << "[4] Germany" << endl;
+		cout << "[5] Other (Enter Manually)" << endl;
+selectcc:		
+		cin >> Selection;
+		//Check to make sure cin is valid (i.e. an integer)
+		if (!cin) {
+     		cout << "Invalid selection. Please type a number between 1 and 5." << endl;
+			cin.clear();
+    		cin.ignore();
+			goto selectcc;
+		}
+		
+		switch (Selection)
+
+		{
+
+		case 1:
+
+			CountryCode="us";
+			AddCountryCode(CountryCode);
+			break;
+
+		case 2:
+
+			CountryCode="gb";
+			AddCountryCode(CountryCode);
+			break;
+
+		case 3:
+
+			CountryCode="fr";
+			AddCountryCode(CountryCode);
+			break;
+
+		case 4:
+
+			CountryCode="de";
+			AddCountryCode(CountryCode);
+			break;
+
+		case 5:
+
+			cout << "Enter Country Code: ";
+			cin >> CountryCode;
+			AddCountryCode(CountryCode);
+			cout << endl;
+			break;
+
+		default:
+
+			cout << "Invalid selection. Please type a number between 1 and 5." << endl;
+			cin.clear();
+    		cin.ignore();
+			goto selectcc;
+		}
+
+	break;
+
+	//User selected "Remove Wi-Fi networks"
+	case 5:
 	
 confirmation:
 		cout << "Are you sure? This will erase all Wi-Fi networks. Y/N";
@@ -252,16 +391,21 @@ confirmation:
 			goto confirmation;
 		}
 		
-	case 5:
-	
+	//User selected "Exit"
+	case 6:
+
 		cout << "Exited wizard." << endl;
 		break;
-		
+
 	default:
-		
-		cout << "That wasn't one of the options! Exited wizard." << endl;
+
+			cout << "Invalid selection. Please type a number between 1 and 6." << endl;
+			cin.clear();
+    		cin.ignore();
+			goto selectcc3;
+
 	}
-	
+
 	return 0;
 	
 }
