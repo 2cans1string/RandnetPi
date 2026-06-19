@@ -416,6 +416,56 @@ def remove_syn_check():
         "--rsource", "--rdest", "--set"
     ])
 
+RANDNET_SERVER_IP = "YOUR_RANDNET_SERVER_IP"
+
+def add_randnet_nat_rules():
+    iptables_add_if_missing([
+        "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"
+    ])
+    iptables_add_if_missing([
+        "iptables", "-A", "FORWARD", "-i", "ppp0", "-o", "eth0", "-j", "ACCEPT"
+    ])
+    iptables_add_if_missing([
+        "iptables", "-A", "FORWARD", "-i", "eth0", "-o", "ppp0",
+        "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"
+    ])
+    for ip in ["172.16.10.30", "172.16.10.31", "172.16.10.40"]:
+        iptables_add_if_missing([
+            "iptables", "-t", "nat", "-A", "PREROUTING",
+            "-i", "ppp0", "-d", ip, "-j", "DNAT",
+            "--to-destination", RANDNET_SERVER_IP
+        ])
+    iptables_add_if_missing([
+        "iptables", "-t", "nat", "-A", "PREROUTING",
+        "-i", "ppp0", "-d", "172.16.10.41", "-p", "tcp", "--dport", "8080",
+        "-j", "DNAT", "--to-destination", RANDNET_SERVER_IP + ":3128"
+    ])
+    logger.info("Randnet NAT rules added")
+
+def remove_randnet_nat_rules():
+    subprocess.call([
+        "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"
+    ])
+    subprocess.call([
+        "iptables", "-D", "FORWARD", "-i", "ppp0", "-o", "eth0", "-j", "ACCEPT"
+    ])
+    subprocess.call([
+        "iptables", "-D", "FORWARD", "-i", "eth0", "-o", "ppp0",
+        "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"
+    ])
+    for ip in ["172.16.10.30", "172.16.10.31", "172.16.10.40"]:
+        subprocess.call([
+            "iptables", "-t", "nat", "-D", "PREROUTING",
+            "-i", "ppp0", "-d", ip, "-j", "DNAT",
+            "--to-destination", RANDNET_SERVER_IP
+        ])
+    subprocess.call([
+        "iptables", "-t", "nat", "-D", "PREROUTING",
+        "-i", "ppp0", "-d", "172.16.10.41", "-p", "tcp", "--dport", "8080",
+        "-j", "DNAT", "--to-destination", RANDNET_SERVER_IP + ":3128"
+    ])
+    logger.info("Randnet NAT rules removed")
+
 def is_service_running(name):
     try:
         # Run pgrep -f process_name
@@ -545,20 +595,15 @@ def autoconfigure_ppp(device, speed):
        Returns the IP allocated to the Dreamcast
     """
 
-    gateway_ip = subprocess.check_output(
-        "route -n | grep 'UG[ \t]' | awk '{print $2}'", shell=True
-    ).decode()
-    subnet = gateway_ip.split(".")[:3]
-
-    PEERS_TEMPLATE = "{device}\n" "{device_speed}\n" "{this_ip}:{dc_ip}\n" "auth\n"
+    PEERS_TEMPLATE = "{device}\n" "{device_speed}\n" "{this_ip}:{dc_ip}\n" "noauth\n" "plugin /etc/ppp/randnet_chap.so\n"
 
     OPTIONS_TEMPLATE = "debug\n" "ms-dns {this_ip}\n" "proxyarp\n" "ktune\n" "noccp\n"
 
-    PAP_SECRETS_TEMPLATE = "# Modded from dreampi.py\n" "# INBOUND connections\n" '*       *       ""      *' "\n"
-     
-    tun_ip =  get_ip_address("tun0")
-    this_ip = find_next_unused_ip(".".join(subnet) + ".100")
+    CHAP_SECRETS_TEMPLATE = '* * "" *\n'
+
+    this_ip = get_ip_address("eth0")
     dreamcast_ip = find_next_unused_ip(this_ip)
+    tun_ip = get_ip_address("tun0")
 
     # Check if VPN is up and set IPs accordingly
     if tun_ip is not None:
@@ -585,10 +630,8 @@ def autoconfigure_ppp(device, speed):
     with open("/etc/ppp/options", "w") as f:
         f.write(options_content)
 
-    pap_secrets_content = PAP_SECRETS_TEMPLATE
-
-    with open("/etc/ppp/pap-secrets", "w") as f:
-        f.write(pap_secrets_content)
+    with open("/etc/ppp/chap-secrets", "w") as f:
+        f.write(CHAP_SECRETS_TEMPLATE)
 
     return dreamcast_ip
 
@@ -815,11 +858,10 @@ class Modem(object):
         self._sending_tone = False
 
     def answer(self):
-        self.reset()
         # When we send ATA we only want to look for CONNECT. Some modems respond OK then CONNECT
         # and that messes everything up
         self.send_command(b"ATA", ignore_responses=[b"OK"])
-        time.sleep(5)
+        time.sleep(1)
         logger.info("Call answered!")
         logger.info(subprocess.check_output(["pon", "dreamcast"]).decode())
         logger.info("Connected")
@@ -1062,7 +1104,7 @@ def process():
         elif mode == "ANSWERING":
             if time_digit_heard is None:
                 raise Exception("Impossible code path")
-            if (now - time_digit_heard).total_seconds() > 8.0:
+            if (now - time_digit_heard).total_seconds() > 2.0:
                 time_digit_heard = None
                 modem.answer()
                 modem.disconnect()
@@ -1137,8 +1179,7 @@ def main():
  
         config_server.start()
         
-        add_increased_ttl()
-        add_syn_check()
+        add_randnet_nat_rules()
 
         start_service("dcvoip")
         start_service("dcgamespy")
@@ -1164,8 +1205,7 @@ def main():
         if tun_ip is not None:
             remove_vpn_rules(tun_ip)      
 
-        remove_increased_ttl()
-        remove_syn_check()
+        remove_randnet_nat_rules()
 
         config_server.stop()
         logger.info("Dreampi quit successfully")
