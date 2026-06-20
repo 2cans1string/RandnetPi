@@ -403,7 +403,26 @@ systemctl enable iptables-restore
 systemctl start iptables-restore
 info "iptables persistence service enabled and started"
 
-# ─── STEP 12: Deploy patched dreampi module + symlink the service entrypoint ──
+# ─── STEP 12: Install first-boot eth0 IP detection service ───────────────────
+# On a freshly-flashed image the eth0 IP will differ from this build machine's.
+# This service re-points dnsmasq + iptables at the new IP on first boot, once.
+
+info "Installing first-boot eth0 IP service..."
+install -m 755 "${SCRIPT_DIR}/etc/randnet-firstboot.sh" /usr/local/bin/randnet-firstboot.sh
+cp "${SCRIPT_DIR}/etc/systemd/randnet-firstboot.service" /etc/systemd/system/randnet-firstboot.service
+systemctl daemon-reload
+systemctl enable randnet-firstboot.service
+
+# Create the state dir and set the done-flag so the service does NOT fire on THIS
+# build machine (its config is already correct for the current eth0 IP).
+# IMPORTANT for image builders: before creating a distributable image, remove the
+# flag so first-boot runs on flashed copies:
+#     sudo rm /var/lib/randnet/firstboot-done
+mkdir -p /var/lib/randnet
+touch /var/lib/randnet/firstboot-done
+info "First-boot service installed and enabled (flag set so it skips on this build machine)."
+
+# ─── STEP 13: Deploy patched dreampi module + symlink the service entrypoint ──
 # dreampi.py imports sibling modules (dcnow, config_server, netlink, ...), so it
 # must live in a module directory alongside them — /home/pi/dreampi. The systemd
 # service runs /usr/local/bin/dreampi, which we make a SYMLINK into that dir (not
@@ -469,7 +488,7 @@ else
     info "Deployed copies verified: Dreamcast Now disabled, eth0-IP DNAT + OUTPUT redirect present."
 fi
 
-# ─── STEP 13: Enable and start all services ───────────────────────────────────
+# ─── STEP 14: Enable and start all services ───────────────────────────────────
 
 info "Starting all services..."
 systemctl daemon-reload
@@ -494,7 +513,7 @@ else
     warning "Tomcat does not appear to be running — check: journalctl -u tomcat -n 50"
 fi
 
-# ─── STEP 14: Success summary ─────────────────────────────────────────────────
+# ─── STEP 15: Success summary ─────────────────────────────────────────────────
 
 echo ""
 echo "=================================================="
