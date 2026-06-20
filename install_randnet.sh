@@ -51,9 +51,24 @@ info "Detected eth0 IP: $ETH0_IP"
 
 info "Installing all required packages (apt must complete before iptables redirect)..."
 apt-get update -y
+
+# Maven pulls in a JDK during this bulk install, and ca-certificates-java's
+# jks-keystore postinst hook deadlocks on Raspbian Buster when Java is configured
+# mid-install. Divert the hook BEFORE apt so the postinst cannot call Java; the
+# EXIT trap guarantees the divert is restored even if the install aborts.
+mkdir -p /etc/ssl/certs/java
+dpkg-divert --local --rename --add /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true
+trap 'dpkg-divert --local --rename --remove /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true' EXIT
+
 apt-get install -y \
     gcc make ppp-dev libpcap-dev \
     maven git wget curl squid dnsmasq
+
+# Restore the jks-keystore hook and run it now that the JDK is configured.
+dpkg-divert --local --rename --remove /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true
+trap - EXIT
+update-ca-certificates
+
 info "All packages installed."
 
 # ─── STEP 3: Enable IP forwarding ────────────────────────────────────────────
@@ -193,18 +208,10 @@ rm -rf "$BUILD_DIR"
 # ─── STEP 6: Install Java 11 ─────────────────────────────────────────────────
 
 info "Installing Java 11..."
-# ca-certificates-java's postinst runs the jks-keystore hook during apt, which
-# crashes on Raspbian Buster because Java's security config is not ready while
-# the package is still being configured (the SSL deadlock). Divert the hook
-# BEFORE apt so the postinst cannot call Java, install cleanly, then restore the
-# hook and run it once afterwards when Java is working.
-mkdir -p /etc/ssl/certs/java
-dpkg-divert --local --rename --add /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true
-
+# The jks-keystore deadlock is already handled around the bulk apt install in
+# Step 2 (where Maven pulls in the JDK), so this just ensures the full JDK is
+# present.
 apt-get install -y openjdk-11-jdk
-
-dpkg-divert --local --rename --remove /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true
-update-ca-certificates
 
 # Verify Java 11 is actually present and working.
 if ! java -version 2>&1 | grep -q 'version "11'; then
