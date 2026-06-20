@@ -1,0 +1,68 @@
+<html>
+<head>
+<meta http-equiv="content-type" content="text/html;charset=Shift_JIS">
+<title>メンバー情報の変更</title>
+</head>
+<body bgcolor="#000000">
+<center>
+<table border="0" cellpadding="0" cellspacing="0" width="482">
+<tr>
+<td bgcolor="#99CC33" height="36">
+<table border="0" cellpadding="4" cellspacing="0" width="482" height="36">
+<tr height="36">
+<td width="36" height="36"><img height="28" width="28" src="x-avefront://---.nixon_screen/image/dl_spana.gif"></td>
+<td><font color="#FFFFFF" size="3"><b>メンバー情報の変更</b></font></td>
+</tr>
+</table>
+</td>
+</tr>
+<tr>
+<td bgcolor="#FFFFCC">
+<table border="0" cellpadding="8" cellspacing="0" width="482">
+<tr>
+<td bgcolor="#FFCC66"><b>メンバーID</b></td>
+</tr>
+<tr>
+<td bgcolor="#FFFFCC">!replace_member_id!</td>
+</tr>
+<tr>
+<td bgcolor="#FFCC66"><b>現在のパスワード</b></td>
+</tr>
+<tr>
+<td bgcolor="#FFFFCC">
+<form method="POST" action="/servlet/ChangeMemberPW">
+<input type="hidden" name="MEMBERID" value="!replace_member_id!">
+<input type="hidden" name="DISKID" value="!replace_disk_id!">
+<input type="password" name="OLDPW" size="20" maxlength="8">
+</td>
+</tr>
+<tr>
+<td bgcolor="#FFCC66"><b>新しいパスワード</b></td>
+</tr>
+<tr>
+<td bgcolor="#FFFFCC"><input type="password" name="NEWPW1" size="20" maxlength="8"></td>
+</tr>
+<tr>
+<td bgcolor="#FFCC66"><b>新しいパスワード（確認）</b></td>
+</tr>
+<tr>
+<td bgcolor="#FFFFCC"><input type="password" name="NEWPW2" size="20" maxlength="8"></td>
+</tr>
+<tr>
+<td align="center" bgcolor="#FFFF99">
+<input type="submit" value="変更する">
+</form>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+<tr>
+<td align="right" bgcolor="#000000">
+<font color="#FFCC66"><a href="javascript:history.back()"><font color="#FFCC66">戻る</font></a></font>
+</td>
+</tr>
+</table>
+</center>
+</body>
+</html>
