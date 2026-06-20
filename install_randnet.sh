@@ -141,10 +141,38 @@ PYEOF
 info "Building patched pppd ${PPPD_VERSION}..."
 cd "$PPPD_SRC"
 ./configure --prefix=/usr --quiet
-# USE_CRYPT=1 makes pppd use the built-in crypt() instead of the setkey/encrypt
-# DES symbols, which modern glibc/libcrypt removed — without it pppcrypt.c fails
-# to link with "undefined reference to setkey/encrypt". The Makefile's
-# `ifdef USE_CRYPT` branch appends -DUSE_CRYPT=1 and drops the -lcrypt link.
+
+# pppd/pppcrypt.c calls the glibc DES primitives setkey()/encrypt(), which modern
+# glibc removed, causing "undefined reference to setkey/encrypt" at link time.
+# These are only reached by MS-CHAP DES, which our CHAP bypass never invokes, so
+# we stub out the three offending calls. We keep USE_CRYPT=1 (below) so pppd uses
+# this libcrypt code path rather than the #else branch, which would pull in a
+# libdes/libcrypto dependency we don't install.
+info "Stubbing out setkey/encrypt calls in pppd/pppcrypt.c..."
+python3 - "pppd/pppcrypt.c" <<'PYEOF'
+import re, sys
+path = sys.argv[1]
+# Match a bare setkey(/encrypt( used as a statement (ends in ');'). This excludes
+# prose inside /* */ comments (no trailing ';') and des_ecb_encrypt( in the #else
+# branch (the lookbehind rejects a preceding identifier character).
+pat = re.compile(r'(?<![A-Za-z0-9_])(setkey|encrypt)\s*\([^;]*\)\s*;')
+out, n = [], 0
+for line in open(path):
+    if pat.search(line):
+        indent = re.match(r'[ \t]*', line).group(0)
+        out.append(indent + "/* RandnetPi: setkey/encrypt stubbed out (MS-CHAP DES unused; removed from modern glibc) */\n")
+        n += 1
+    else:
+        out.append(line)
+if n == 0:
+    print("WARNING: no setkey/encrypt statements found to stub in " + path, file=sys.stderr)
+open(path, 'w').writelines(out)
+print("Stubbed %d setkey/encrypt call(s) in %s" % (n, path))
+PYEOF
+
+# USE_CRYPT=1 selects the libcrypt DES branch above (now stubbed) instead of the
+# #else branch that requires libdes; the Makefile's `ifdef USE_CRYPT` also drops
+# the -lcrypt link.
 make -j"$(nproc)" -C pppd pppd USE_CRYPT=1
 
 if [ -f /usr/sbin/pppd ] && [ ! -f /usr/sbin/pppd.orig ]; then
