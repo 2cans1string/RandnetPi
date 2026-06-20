@@ -45,7 +45,7 @@ iptables -t nat -F 2>/dev/null || true
 info "Installing all required packages (apt must complete before iptables redirect)..."
 apt-get update -y
 apt-get install -y \
-    gcc make ppp-dev libpam-dev libpcap-dev \
+    gcc make ppp-dev libpcap-dev \
     maven git wget curl squid dnsmasq
 info "All packages installed."
 
