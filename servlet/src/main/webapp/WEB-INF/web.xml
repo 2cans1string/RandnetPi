@@ -65,23 +65,5 @@
         <url-pattern>/servlet/ChangeMailPassword</url-pattern>
     </servlet-mapping>
 
-    <servlet>
-        <servlet-name>StaticContent</servlet-name>
-        <servlet-class>jp.ne.randnet.servlet.StaticContentServlet</servlet-class>
-        <load-on-startup>1</load-on-startup>
-    </servlet>
-    <servlet-mapping>
-        <servlet-name>StaticContent</servlet-name>
-        <url-pattern>/v/*</url-pattern>
-    </servlet-mapping>
-    <servlet-mapping>
-        <servlet-name>StaticContent</servlet-name>
-        <url-pattern>/help/*</url-pattern>
-    </servlet-mapping>
-    <servlet-mapping>
-        <servlet-name>StaticContent</servlet-name>
-        <url-pattern>/hello/*</url-pattern>
-    </servlet-mapping>
-
 
 </web-app>

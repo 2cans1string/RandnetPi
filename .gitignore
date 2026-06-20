@@ -9,8 +9,7 @@ venv/
 build/
 dist/
 
-# Randnet - servlet (not public yet)
-servlet/
+# Randnet - servlet build artifacts
 servlet/target/
 servlet/src/main/webapp/test_index.html
 
