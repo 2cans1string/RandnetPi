@@ -11,6 +11,8 @@ dist/
 
 # Randnet - servlet (not public yet)
 servlet/
+servlet/target/
+servlet/src/main/webapp/test_index.html
 
 # Randnet - build artifacts
 *.war
@@ -22,3 +24,6 @@ docker-compose.yml
 # Randnet - IDE files
 .vscode/
 .idea/
+
+# Randnet - local project instructions (never push)
+CLAUDE.md

@@ -32,15 +32,19 @@ FILE_OUT=$(file "$PPPD_BIN" 2>/dev/null || echo "unknown")
 if echo "$FILE_OUT" | grep -qi "aarch64"; then
     ARCH="aarch64"
     MARCH_FLAG="-march=armv8-a"
+    ADOPTIUM_ARCH="aarch64"
 elif echo "$FILE_OUT" | grep -qi "ARM"; then
     ARCH="armv7l"
     MARCH_FLAG="-march=armv7-a"
+    ADOPTIUM_ARCH="arm"
 elif echo "$FILE_OUT" | grep -qi "x86-64"; then
     ARCH="x86_64"
     MARCH_FLAG="-march=x86-64"
+    ADOPTIUM_ARCH="x64"
 else
     ARCH="unknown"
     MARCH_FLAG=""
+    ADOPTIUM_ARCH=""
     echo "WARNING: Unrecognised architecture — compiling without -march flag"
 fi
 
@@ -55,11 +59,11 @@ echo ""
 
 # ─── Stage 1: System dependencies ────────────────────────────────────────────
 # All packages installed before port-80 iptables redirect so apt stays intact.
+# Java 21 is installed from Adoptium in Stage 5, not from apt.
 
-echo "[1/9] Installing system dependencies..."
+echo "[1/10] Installing system dependencies..."
 apt-get update -y
 apt-get install -y \
-    openjdk-21-jdk \
     maven \
     gcc \
     make \
@@ -75,13 +79,10 @@ apt-get install -y \
     wget \
     curl
 
-JAVA_HOME=$(readlink -f /usr/bin/java | sed 's|/bin/java||')
-echo "  JAVA_HOME: $JAVA_HOME"
-
 # ─── Stage 2: Download pppd 2.4.7 source from Debian archive ─────────────────
 
 echo ""
-echo "[2/9] Downloading pppd ${PPPD_VERSION} source..."
+echo "[2/10] Downloading pppd ${PPPD_VERSION} source..."
 BUILD_DIR=$(mktemp -d /tmp/randnet-build.XXXXXX)
 
 DOWNLOADED=0
@@ -112,11 +113,32 @@ echo "  Extracted to $PPPD_SRC"
 # we're about to install.
 
 echo ""
-echo "[3/9] Compiling randnet_chap.so (arch: $ARCH)..."
+echo "[3/10] Compiling randnet_chap.so (arch: $ARCH)..."
 gcc $MARCH_FLAG -fPIC -shared \
     -I "${PPPD_SRC}/pppd" \
     -o "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" \
     "${SCRIPT_DIR}/pppd_plugin/randnet_chap.c"
+
+# Verify plugin architecture matches pppd
+PLUGIN_FILE_OUT=$(file "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" 2>/dev/null || echo "unknown")
+if echo "$PLUGIN_FILE_OUT" | grep -qi "aarch64"; then
+    PLUGIN_ARCH="aarch64"
+elif echo "$PLUGIN_FILE_OUT" | grep -qi "ARM"; then
+    PLUGIN_ARCH="armv7l"
+elif echo "$PLUGIN_FILE_OUT" | grep -qi "x86-64"; then
+    PLUGIN_ARCH="x86_64"
+else
+    PLUGIN_ARCH="unknown"
+fi
+
+if [ "$PLUGIN_ARCH" != "$ARCH" ]; then
+    echo "ERROR: Architecture mismatch — pppd is $ARCH but plugin compiled as $PLUGIN_ARCH"
+    echo "  pppd:   $FILE_OUT"
+    echo "  plugin: $PLUGIN_FILE_OUT"
+    exit 1
+fi
+echo "  Architecture verified: plugin matches pppd ($ARCH)"
+
 install -m 755 "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" /etc/ppp/
 echo "  randnet_chap.so → /etc/ppp/"
 
@@ -125,7 +147,7 @@ echo "  randnet_chap.so → /etc/ppp/"
 # Patching auth_ip_addr() to always return 1 accepts any peer IP.
 
 echo ""
-echo "[4/9] Patching and compiling pppd ${PPPD_VERSION}..."
+echo "[4/10] Patching and compiling pppd ${PPPD_VERSION}..."
 
 AUTH_C="${PPPD_SRC}/pppd/auth.c"
 
@@ -161,10 +183,45 @@ install -m 755 -o root -g root pppd/pppd /usr/sbin/pppd
 echo "  Patched pppd ${PPPD_VERSION} installed to /usr/sbin/pppd"
 cd "$SCRIPT_DIR"
 
-# ─── Stage 5: Apache Tomcat 9 ────────────────────────────────────────────────
+# ─── Stage 5: Java 21 from Adoptium ──────────────────────────────────────────
+# Adoptium Temurin 21 for ARM (aarch64 or arm) — not from apt.
 
 echo ""
-echo "[5/9] Installing Apache Tomcat ${TOMCAT_VERSION}..."
+echo "[5/10] Installing Java 21 from Adoptium (${ADOPTIUM_ARCH})..."
+
+if [ -z "$ADOPTIUM_ARCH" ]; then
+    echo "ERROR: Cannot determine Adoptium architecture for $ARCH"
+    exit 1
+fi
+
+ADOPTIUM_URL="https://api.adoptium.net/v3/binary/latest/21/ga/linux/${ADOPTIUM_ARCH}/jdk/hotspot/normal/eclipse"
+echo "  Downloading from Adoptium API (arch: ${ADOPTIUM_ARCH})..."
+wget -q --show-progress -O /tmp/temurin-21.tar.gz "$ADOPTIUM_URL"
+
+mkdir -p /opt/java
+tar -xzf /tmp/temurin-21.tar.gz -C /opt/java
+TEMURIN_DIR=$(find /opt/java -maxdepth 1 -type d -name "jdk-21*" | head -1)
+
+if [ -z "$TEMURIN_DIR" ]; then
+    echo "ERROR: Could not find extracted Temurin JDK directory in /opt/java"
+    exit 1
+fi
+
+ln -sfn "$TEMURIN_DIR" /opt/java/temurin-21
+JAVA_HOME=/opt/java/temurin-21
+export JAVA_HOME
+export PATH="$JAVA_HOME/bin:$PATH"
+
+# Persist JAVA_HOME for all users
+grep -qxF "JAVA_HOME=/opt/java/temurin-21" /etc/environment \
+    || echo "JAVA_HOME=/opt/java/temurin-21" >> /etc/environment
+
+echo "  Java 21 installed: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1)"
+
+# ─── Stage 6: Apache Tomcat 9 ────────────────────────────────────────────────
+
+echo ""
+echo "[6/10] Installing Apache Tomcat ${TOMCAT_VERSION}..."
 
 if ! id tomcat &>/dev/null; then
     useradd -m -U -d /opt/tomcat -s /bin/false tomcat
@@ -206,12 +263,12 @@ systemctl enable tomcat
 systemctl start tomcat
 echo "  Tomcat started"
 
-# ─── Stage 6: Build and deploy ROOT.war ──────────────────────────────────────
+# ─── Stage 7: Build and deploy ROOT.war ──────────────────────────────────────
 # Build from local servlet/ directory — no external repo clone needed.
-# Must run before stage 7 iptables redirect so Maven can reach the internet.
+# Must run before stage 8 iptables redirect so Maven can reach the internet.
 
 echo ""
-echo "[6/9] Building ROOT.war from ${SCRIPT_DIR}/servlet/..."
+echo "[7/10] Building ROOT.war from ${SCRIPT_DIR}/servlet/..."
 cd "${SCRIPT_DIR}/servlet"
 mvn clean package -q
 cp target/ROOT.war /opt/tomcat/webapps/ROOT.war
@@ -229,31 +286,37 @@ for i in $(seq 1 20); do
 done
 cd "$SCRIPT_DIR"
 
-# ─── Stage 7: iptables rules ─────────────────────────────────────────────────
+# ─── Stage 8: iptables rules ─────────────────────────────────────────────────
 # Applied AFTER Maven so port-80 redirect does not break package downloads.
 
 echo ""
-echo "[7/9] Configuring iptables..."
-
-# Port 80 → 8080 (Tomcat) for all incoming and locally-generated traffic
-iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8080
-iptables -t nat -A OUTPUT -p tcp --dport 80 -m owner ! --uid-owner proxy \
-    -j REDIRECT --to-port 8080
+echo "[8/10] Configuring iptables..."
 
 # MASQUERADE for PPP → eth0
 iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
 
-# DNAT 172.16.10.41:8080 and 172.16.10.40:8080 → Squid on localhost:3128
-for RNET_IP in 172.16.10.41 172.16.10.40; do
-    iptables -t nat -A PREROUTING -i ppp0 -d "$RNET_IP" -p tcp --dport 8080 \
-        -j DNAT --to-destination 127.0.0.1:3128
-done
+# Port 80 → 8080 (Tomcat) for all incoming traffic
+iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8080
 
-# DNAT 172.16.10.30 and 172.16.10.31 → Tomcat on localhost:8080
-for RNET_IP in 172.16.10.30 172.16.10.31; do
-    iptables -t nat -A PREROUTING -i ppp0 -d "$RNET_IP" \
-        -j DNAT --to-destination 127.0.0.1:8080
-done
+# Port 80 → 8080 for locally-generated traffic, excluding the proxy user (Squid)
+iptables -t nat -A OUTPUT -p tcp --dport 80 -m owner ! --uid-owner proxy \
+    -j REDIRECT --to-port 8080
+
+# DNAT 172.16.10.41:8080 → Squid on localhost:3128
+iptables -t nat -A PREROUTING -i ppp0 -d 172.16.10.41 -p tcp --dport 8080 \
+    -j DNAT --to-destination 127.0.0.1:3128
+
+# DNAT 172.16.10.40:8080 → Squid on localhost:3128
+iptables -t nat -A PREROUTING -i ppp0 -d 172.16.10.40 -p tcp --dport 8080 \
+    -j DNAT --to-destination 127.0.0.1:3128
+
+# DNAT 172.16.10.30 → Tomcat on localhost:8080
+iptables -t nat -A PREROUTING -i ppp0 -d 172.16.10.30 \
+    -j DNAT --to-destination 127.0.0.1:8080
+
+# DNAT 172.16.10.31 → Tomcat on localhost:8080
+iptables -t nat -A PREROUTING -i ppp0 -d 172.16.10.31 \
+    -j DNAT --to-destination 127.0.0.1:8080
 
 # Persist rules so they survive reboot
 mkdir -p /etc/iptables
@@ -277,10 +340,10 @@ systemctl daemon-reload
 systemctl enable iptables-restore
 echo "  iptables rules applied and persisted via systemd"
 
-# ─── Stage 8: Squid proxy ────────────────────────────────────────────────────
+# ─── Stage 9: Squid proxy ────────────────────────────────────────────────────
 
 echo ""
-echo "[8/9] Configuring Squid on port 3128..."
+echo "[9/10] Configuring Squid on port 3128..."
 
 cat > /etc/squid/conf.d/randnet.conf <<'EOF'
 acl randnet_ppp src 10.200.0.0/16
@@ -293,10 +356,10 @@ systemctl enable squid
 systemctl restart squid
 echo "  Squid configured on port 3128"
 
-# ─── Stage 9: dnsmasq + IP forwarding + accounts config ──────────────────────
+# ─── Stage 10: dnsmasq + IP forwarding ───────────────────────────────────────
 
 echo ""
-echo "[9/9] Configuring dnsmasq, IP forwarding, and accounts..."
+echo "[10/10] Configuring dnsmasq and IP forwarding..."
 
 mkdir -p /etc/dnsmasq.d
 cp "${SCRIPT_DIR}/etc/dnsmasq.d/randnet.conf" /etc/dnsmasq.d/
@@ -311,7 +374,7 @@ fi
 
 systemctl enable dnsmasq
 systemctl restart dnsmasq
-echo "  dnsmasq configured (*.randnet.ne.jp → 127.0.0.1)"
+echo "  dnsmasq configured (*.randnet.ne.jp + *.randnetdd.co.jp → 127.0.0.1)"
 
 echo 1 > /proc/sys/net/ipv4/ip_forward
 if grep -q "^#*net.ipv4.ip_forward" /etc/sysctl.conf; then
@@ -319,13 +382,7 @@ if grep -q "^#*net.ipv4.ip_forward" /etc/sysctl.conf; then
 else
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 fi
-echo "  IP forwarding enabled"
-
-mkdir -p /etc/randnet
-if [ ! -f /etc/randnet/accounts.conf ]; then
-    cp "${SCRIPT_DIR}/etc/randnet/accounts.conf.example" /etc/randnet/accounts.conf
-    echo "  Created /etc/randnet/accounts.conf — edit before connecting"
-fi
+echo "  IP forwarding enabled persistently"
 
 # ─── Cleanup + summary ───────────────────────────────────────────────────────
 
@@ -336,15 +393,27 @@ echo "=================================================="
 echo " RandnetPi — Install Complete"
 echo "=================================================="
 echo ""
+echo " Stack installed:"
+echo "   Java:     ${JAVA_HOME} (Temurin 21)"
+echo "   Tomcat:   /opt/tomcat  (${TOMCAT_VERSION})"
+echo "   pppd:     /usr/sbin/pppd (${PPPD_VERSION} — auth_ip_addr patched)"
+echo "   CHAP:     /etc/ppp/randnet_chap.so (${ARCH})"
+echo "   Squid:    port 3128"
+echo "   dnsmasq:  *.randnet.ne.jp + *.randnetdd.co.jp → 127.0.0.1"
+echo ""
+echo " iptables NAT rules:"
+echo "   MASQUERADE on eth0"
+echo "   :80 → :8080 (PREROUTING + OUTPUT)"
+echo "   172.16.10.40:8080 → 127.0.0.1:3128 (Squid)"
+echo "   172.16.10.41:8080 → 127.0.0.1:3128 (Squid)"
+echo "   172.16.10.30      → 127.0.0.1:8080 (Tomcat)"
+echo "   172.16.10.31      → 127.0.0.1:8080 (Tomcat)"
+echo ""
 echo " Verification:"
 echo "   Servlet:  curl http://localhost/servlet/GetNewVersion"
 echo "   Squid:    curl -x http://localhost:3128 http://example.com/ | head -3"
 echo ""
 echo " Next steps:"
-echo "   1. Edit /etc/randnet/accounts.conf with your Randnet disk credentials"
-echo "   2. Start dreampi: sudo python ${SCRIPT_DIR}/dreampi.py start"
-echo "   3. Watch logs:    sudo tail -f /opt/tomcat/logs/catalina.out"
-echo ""
-echo " pppd:  /usr/sbin/pppd (patched — auth_ip_addr always returns 1)"
-echo " CHAP:  /etc/ppp/randnet_chap.so"
+echo "   1. Start dreampi: sudo python ${SCRIPT_DIR}/dreampi.py start"
+echo "   2. Watch logs:    sudo tail -f /opt/tomcat/logs/catalina.out"
 echo "=================================================="
