@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 #dreampi.py_version=202512152004
 # from __future__ import absolute_import
 # from __future__ import print_function
@@ -421,26 +422,26 @@ def add_randnet_nat_rules():
     iptables_add_if_missing([
         "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"
     ])
-    # Port 80 → 8080 (Tomcat) — all incoming traffic
+    # Port 80 -> 8080 (Tomcat) -- all incoming traffic
     iptables_add_if_missing([
         "iptables", "-t", "nat", "-A", "PREROUTING",
         "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", "8080"
     ])
-    # Port 80 → 8080 for locally-originated traffic, exempting the proxy user (Squid)
+    # Port 80 -> 8080 for locally-originated traffic, exempting the proxy user (Squid)
     iptables_add_if_missing([
         "iptables", "-t", "nat", "-A", "OUTPUT",
         "-p", "tcp", "--dport", "80",
         "-m", "owner", "!", "--uid-owner", "proxy",
         "-j", "REDIRECT", "--to-port", "8080"
     ])
-    # DNAT 172.16.10.41:8080 and 172.16.10.40:8080 → Squid on localhost:3128
+    # DNAT 172.16.10.41:8080 and 172.16.10.40:8080 -> Squid on localhost:3128
     for ip in ["172.16.10.41", "172.16.10.40"]:
         iptables_add_if_missing([
             "iptables", "-t", "nat", "-A", "PREROUTING",
             "-i", "ppp0", "-d", ip, "-p", "tcp", "--dport", "8080",
             "-j", "DNAT", "--to-destination", "127.0.0.1:3128"
         ])
-    # DNAT 172.16.10.30 and 172.16.10.31 → Tomcat on localhost:8080
+    # DNAT 172.16.10.30 and 172.16.10.31 -> Tomcat on localhost:8080
     for ip in ["172.16.10.30", "172.16.10.31"]:
         iptables_add_if_missing([
             "iptables", "-t", "nat", "-A", "PREROUTING",
