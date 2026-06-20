@@ -161,7 +161,7 @@ if [ -e /usr/lib/arm-linux-gnueabihf/libcrypto.so.1.1 ] && \
     info "Created libcrypto.so symlink"
 fi
 info "Building pppd without MS-CHAP/MPPE (CHAPMS= MPPE=)..."
-make -C pppd pppd CHAPMS= MPPE= LIBS="-lcrypt -lutil -ldl"
+make -C pppd pppd CHAPMS= MPPE= LIBS="-lcrypt -lutil -ldl -lpcap"
 
 if [ -f /usr/sbin/pppd ] && [ ! -f /usr/sbin/pppd.orig ]; then
     cp /usr/sbin/pppd /usr/sbin/pppd.orig
