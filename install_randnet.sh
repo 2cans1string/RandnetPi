@@ -8,6 +8,9 @@
 
 set -e
 
+# Run apt and other tooling without interactive prompts
+export DEBIAN_FRONTEND=noninteractive
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PPPD_VERSION="2.4.7"
 PPPD_SRC_URLS=(
@@ -95,7 +98,7 @@ BUILD_DIR=$(mktemp -d /tmp/randnet-pppd.XXXXXX)
 PPPD_DOWNLOADED=0
 for PPPD_URL in "${PPPD_SRC_URLS[@]}"; do
     info "Trying $PPPD_URL ..."
-    if wget -q -O "${BUILD_DIR}/ppp.tar.gz" "$PPPD_URL" 2>/dev/null; then
+    if wget -q --timeout=30 --tries=3 -O "${BUILD_DIR}/ppp.tar.gz" "$PPPD_URL" 2>/dev/null; then
         info "Downloaded pppd source from $PPPD_URL"
         PPPD_DOWNLOADED=1
         break
@@ -172,7 +175,7 @@ if ! id tomcat &>/dev/null; then
     info "Created tomcat user"
 fi
 
-wget -q -O "/tmp/apache-tomcat-${TOMCAT_VERSION}.tar.gz" "$TOMCAT_URL" \
+wget -q --timeout=30 --tries=3 -O "/tmp/apache-tomcat-${TOMCAT_VERSION}.tar.gz" "$TOMCAT_URL" \
     || error "Failed to download Tomcat ${TOMCAT_VERSION}"
 if systemctl is-active --quiet tomcat 2>/dev/null; then
     info "Stopping running Tomcat instance before reinstall..."
