@@ -420,6 +420,29 @@ else
     mkdir -p "$(dirname "$DREAMPI_BIN")"
     ln -sfn "${DREAMPI_DIR}/dreampi.py" "$DREAMPI_BIN"
     info "Symlinked $DREAMPI_BIN -> ${DREAMPI_DIR}/dreampi.py"
+
+    # Post-deploy verification: grep the DEPLOYED copies (NOT the repo) to confirm
+    # the patches actually landed. A stale file or an unflushed .pyc would silently
+    # revert behaviour (domain leak / broken 127.0.0.1 DNAT), so fail loudly here
+    # rather than discover it during a live 64DD session.
+    info "Verifying deployed copies carry the Randnet patches..."
+    DEPLOYED_DCNOW="${DREAMPI_DIR}/dcnow.py"
+    DEPLOYED_DREAMPI="${DREAMPI_DIR}/dreampi.py"
+
+    grep -qF "Dreamcast Now fully disabled" "$DEPLOYED_DCNOW" \
+        || error "STALE DEPLOY: $DEPLOYED_DCNOW lacks the Dreamcast Now disable patch — domain reporting would still leak 64DD domains to the DCNow API. Redeploy the repo dcnow.py and clear *.pyc."
+
+    grep -qF ".format(eth0_ip)" "$DEPLOYED_DREAMPI" \
+        || error "STALE DEPLOY: $DEPLOYED_DREAMPI lacks the eth0-IP DNAT patch. Redeploy the repo dreampi.py and clear *.pyc."
+
+    if grep -qF "127.0.0.1:8080" "$DEPLOYED_DREAMPI" || grep -qF "127.0.0.1:3128" "$DEPLOYED_DREAMPI"; then
+        error "STALE DEPLOY: $DEPLOYED_DREAMPI still contains broken 127.0.0.1 DNAT targets. Redeploy the repo dreampi.py and clear *.pyc."
+    fi
+
+    grep -qF '"-d", eth0_ip, "--dport", "80"' "$DEPLOYED_DREAMPI" \
+        || error "STALE DEPLOY: $DEPLOYED_DREAMPI lacks the OUTPUT-chain port-80 redirect (the critical Squid/64DD fix). Redeploy the repo dreampi.py and clear *.pyc."
+
+    info "Deployed copies verified: Dreamcast Now disabled, eth0-IP DNAT + OUTPUT redirect present."
 fi
 
 # ─── STEP 14: Enable and start all services ───────────────────────────────────
