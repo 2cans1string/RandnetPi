@@ -193,24 +193,20 @@ rm -rf "$BUILD_DIR"
 # ─── STEP 6: Install Java 11 ─────────────────────────────────────────────────
 
 info "Installing Java 11..."
-# Create the cacerts dir BEFORE apt runs: ca-certificates-java is configured
-# during the openjdk-11-jdk install and crashes if /etc/ssl/certs/java is
-# missing (the Raspbian Buster deadlock). Creating it first prevents the crash;
-# the dpkg recovery below is a belt-and-suspenders fallback.
+# ca-certificates-java's postinst runs the jks-keystore hook during apt, which
+# crashes on Raspbian Buster because Java's security config is not ready while
+# the package is still being configured (the SSL deadlock). Divert the hook
+# BEFORE apt so the postinst cannot call Java, install cleanly, then restore the
+# hook and run it once afterwards when Java is working.
 mkdir -p /etc/ssl/certs/java
-# openjdk-11-jdk can still fail mid-configuration on Buster, so tolerate the
-# error here and let the self-heal block recover it.
-apt-get install -y openjdk-11-jdk || warning "openjdk-11-jdk install errored — attempting dpkg recovery..."
+dpkg-divert --local --rename --add /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true
 
-# Self-heal the Buster ca-certificates-java / openjdk-11-jre-headless deadlock.
-ARCH=$(dpkg --print-architecture)
-info "Recovering Java dpkg state (arch: ${ARCH})..."
-dpkg --configure --force-depends openjdk-11-jre-headless:${ARCH} || true
-dpkg --configure ca-certificates-java || true
-dpkg --configure -a
-apt-get install -f -y
+apt-get install -y openjdk-11-jdk
 
-# Verify Java 11 is actually present and working after recovery.
+dpkg-divert --local --rename --remove /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true
+update-ca-certificates
+
+# Verify Java 11 is actually present and working.
 if ! java -version 2>&1 | grep -q 'version "11'; then
     echo "ERROR: Java 11 failed to install"
     exit 1
