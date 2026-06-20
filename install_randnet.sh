@@ -193,7 +193,27 @@ rm -rf "$BUILD_DIR"
 # ─── STEP 6: Install Java 11 ─────────────────────────────────────────────────
 
 info "Installing Java 11..."
-apt-get install -y openjdk-11-jdk
+# openjdk-11-jdk can fail mid-configuration on Raspbian Buster due to a
+# ca-certificates-java / openjdk-11-jre-headless dpkg deadlock. Tolerate the
+# error here so the self-heal block below can recover it.
+apt-get install -y openjdk-11-jdk || warning "openjdk-11-jdk install errored — attempting dpkg recovery..."
+
+# Self-heal the Buster ca-certificates-java / openjdk-11-jre-headless deadlock.
+ARCH=$(dpkg --print-architecture)
+info "Recovering Java dpkg state (arch: ${ARCH})..."
+mkdir -p /etc/ssl/certs/java
+dpkg --configure --force-depends openjdk-11-jre-headless:${ARCH} || true
+dpkg --configure ca-certificates-java || true
+dpkg --configure -a
+apt-get install -f -y
+
+# Verify Java 11 is actually present and working after recovery.
+if ! java -version 2>&1 | grep -q 'version "11'; then
+    echo "ERROR: Java 11 failed to install"
+    exit 1
+fi
+info "Java 11 verified: $(java -version 2>&1 | head -1)"
+
 JAVA_BIN=$(which java 2>/dev/null || readlink -f /usr/bin/java 2>/dev/null || true)
 if [ -z "$JAVA_BIN" ]; then
     error "Java installation succeeded but java binary not found on PATH"
