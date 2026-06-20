@@ -10,7 +10,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PPPD_VERSION="2.4.7"
-PPPD_SRC_URL="http://archive.debian.org/debian/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
+PPPD_SRC_URLS=(
+    "https://snapshot.debian.org/archive/debian/20210101T000000Z/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
+    "http://ftp.debian.org/debian/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
+    "http://deb.debian.org/debian/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
+)
 TOMCAT_VERSION="9.0.118"
 TOMCAT_URL="https://dlcdn.apache.org/tomcat/tomcat-9/v${TOMCAT_VERSION}/bin/apache-tomcat-${TOMCAT_VERSION}.tar.gz"
 
@@ -39,7 +43,7 @@ info "Installing all required packages (apt must complete before iptables redire
 apt-get update -y
 apt-get install -y \
     gcc make ppp-dev libpam-dev libpcap-dev \
-    maven git wget curl squid
+    maven git wget curl squid dnsmasq
 info "All packages installed."
 
 # ─── STEP 3: Enable IP forwarding ────────────────────────────────────────────
@@ -53,44 +57,33 @@ else
 fi
 info "IP forwarding enabled persistently via sysctl."
 
-# ─── STEP 4: Detect pppd arch, compile and verify randnet_chap.so ────────────
-
-info "Detecting pppd architecture..."
-PPPD_FILE_OUT=$(file /usr/sbin/pppd 2>/dev/null || echo "unknown")
-info "pppd: $PPPD_FILE_OUT"
-
-if echo "$PPPD_FILE_OUT" | grep -qE "64-bit|ELF 64|aarch64"; then
-    ARCH_FLAG="-m64"
-    ARCH_BITS="64-bit"
-elif echo "$PPPD_FILE_OUT" | grep -qE "32-bit|ELF 32|ARM"; then
-    ARCH_FLAG="-m32"
-    ARCH_BITS="32-bit"
-else
-    warning "Cannot determine pppd bitness — compiling without -m32/-m64"
-    ARCH_FLAG=""
-    ARCH_BITS="unknown"
-fi
-info "ARCH_FLAG=${ARCH_FLAG:-none} (${ARCH_BITS})"
+# ─── STEP 4: Compile randnet_chap.so and verify against pppd ────────────────
+# No -m32/-m64 flags: on ARM the compiler triple already targets the correct
+# word size implicitly. Those flags are x86-only and are rejected by ARM GCC.
 
 info "Compiling randnet_chap.so..."
-gcc ${ARCH_FLAG} -fPIC -shared \
+gcc -fPIC -shared \
     -I /usr/include/pppd \
     -o "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" \
     "${SCRIPT_DIR}/pppd_plugin/randnet_chap.c"
 
-# Verify compiled .so architecture matches pppd
+# Post-compile verification: warn if .so and pppd ELF width differ
+PPPD_FILE_OUT=$(file /usr/sbin/pppd 2>/dev/null || echo "unknown")
 SO_FILE_OUT=$(file "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" 2>/dev/null || echo "unknown")
-info "randnet_chap.so: $SO_FILE_OUT"
+info "pppd:             $PPPD_FILE_OUT"
+info "randnet_chap.so:  $SO_FILE_OUT"
 
 PPPD_IS_64=$(echo "$PPPD_FILE_OUT" | grep -cE "64-bit|ELF 64|aarch64" || true)
 SO_IS_64=$(echo "$SO_FILE_OUT"     | grep -cE "64-bit|ELF 64|aarch64" || true)
 
 if [ "$PPPD_IS_64" != "$SO_IS_64" ]; then
-    error "Architecture mismatch — pppd is ${ARCH_BITS} but randnet_chap.so is different.
-  pppd: $PPPD_FILE_OUT
-  .so:  $SO_FILE_OUT"
+    warning "Architecture mismatch: pppd and randnet_chap.so have different ELF widths."
+    warning "  pppd:            $PPPD_FILE_OUT"
+    warning "  randnet_chap.so: $SO_FILE_OUT"
+    warning "The CHAP plugin may fail to load at runtime. Check your gcc toolchain."
+else
+    info "Architecture verified: pppd and randnet_chap.so ELF width match."
 fi
-info "Architecture verified: pppd and randnet_chap.so both ${ARCH_BITS}"
 
 install -m 755 "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" /etc/ppp/randnet_chap.so
 info "randnet_chap.so installed to /etc/ppp/randnet_chap.so"
@@ -99,8 +92,19 @@ info "randnet_chap.so installed to /etc/ppp/randnet_chap.so"
 
 info "Downloading pppd ${PPPD_VERSION} source..."
 BUILD_DIR=$(mktemp -d /tmp/randnet-pppd.XXXXXX)
-wget -q -O "${BUILD_DIR}/ppp.tar.gz" "$PPPD_SRC_URL" \
-    || error "Failed to download pppd source from $PPPD_SRC_URL"
+PPPD_DOWNLOADED=0
+for PPPD_URL in "${PPPD_SRC_URLS[@]}"; do
+    info "Trying $PPPD_URL ..."
+    if wget -q -O "${BUILD_DIR}/ppp.tar.gz" "$PPPD_URL" 2>/dev/null; then
+        info "Downloaded pppd source from $PPPD_URL"
+        PPPD_DOWNLOADED=1
+        break
+    else
+        warning "Failed: $PPPD_URL"
+        rm -f "${BUILD_DIR}/ppp.tar.gz"
+    fi
+done
+[ "$PPPD_DOWNLOADED" -eq 1 ] || error "All pppd source URLs failed — cannot continue"
 tar -xzf "${BUILD_DIR}/ppp.tar.gz" -C "$BUILD_DIR"
 PPPD_SRC=$(find "$BUILD_DIR" -maxdepth 1 -type d -name "ppp-*" | head -1)
 [ -n "$PPPD_SRC" ] || error "Could not find pppd source directory after extraction"
@@ -131,10 +135,10 @@ with open(path, 'w') as f:
 print("Patched: " + path)
 PYEOF
 
-info "Building patched pppd ${PPPD_VERSION} (ARCH_FLAG=${ARCH_FLAG:-none})..."
+info "Building patched pppd ${PPPD_VERSION}..."
 cd "$PPPD_SRC"
-CFLAGS="$ARCH_FLAG" ./configure --prefix=/usr --quiet
-CFLAGS="$ARCH_FLAG" make -j"$(nproc)" -C pppd pppd
+./configure --prefix=/usr --quiet
+make -j"$(nproc)" -C pppd pppd
 
 if [ -f /usr/sbin/pppd ] && [ ! -f /usr/sbin/pppd.orig ]; then
     cp /usr/sbin/pppd /usr/sbin/pppd.orig
@@ -149,7 +153,14 @@ rm -rf "$BUILD_DIR"
 
 info "Installing Java 11..."
 apt-get install -y openjdk-11-jdk
-JAVA_HOME=$(dirname $(dirname $(readlink -f /usr/bin/java)))
+JAVA_BIN=$(which java 2>/dev/null || readlink -f /usr/bin/java 2>/dev/null || true)
+if [ -z "$JAVA_BIN" ]; then
+    error "Java installation succeeded but java binary not found on PATH"
+fi
+JAVA_HOME=$(dirname $(dirname $(readlink -f "$JAVA_BIN")))
+if [ "$JAVA_HOME" = "/" ] || [ -z "$JAVA_HOME" ]; then
+    error "JAVA_HOME detection produced invalid path: $JAVA_HOME"
+fi
 echo "JAVA_HOME=${JAVA_HOME}" >> /etc/environment
 info "Java 11 installed — JAVA_HOME=${JAVA_HOME}"
 
@@ -163,6 +174,11 @@ fi
 
 wget -q -O "/tmp/apache-tomcat-${TOMCAT_VERSION}.tar.gz" "$TOMCAT_URL" \
     || error "Failed to download Tomcat ${TOMCAT_VERSION}"
+if systemctl is-active --quiet tomcat 2>/dev/null; then
+    info "Stopping running Tomcat instance before reinstall..."
+    systemctl stop tomcat
+    sleep 2
+fi
 rm -rf /opt/tomcat
 mkdir -p /opt/tomcat
 tar -xzf "/tmp/apache-tomcat-${TOMCAT_VERSION}.tar.gz" -C /opt/tomcat --strip-components=1
@@ -239,6 +255,9 @@ if [ -f /etc/dnsmasq.conf ]; then
         echo "conf-dir=/etc/dnsmasq.d" >> /etc/dnsmasq.conf
         info "Added conf-dir=/etc/dnsmasq.d to /etc/dnsmasq.conf"
     fi
+else
+    echo "conf-dir=/etc/dnsmasq.d" > /etc/dnsmasq.conf
+    info "Created /etc/dnsmasq.conf with conf-dir=/etc/dnsmasq.d"
 fi
 info "dnsmasq Randnet config installed"
 
