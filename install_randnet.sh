@@ -193,15 +193,18 @@ rm -rf "$BUILD_DIR"
 # ─── STEP 6: Install Java 11 ─────────────────────────────────────────────────
 
 info "Installing Java 11..."
-# openjdk-11-jdk can fail mid-configuration on Raspbian Buster due to a
-# ca-certificates-java / openjdk-11-jre-headless dpkg deadlock. Tolerate the
-# error here so the self-heal block below can recover it.
+# Create the cacerts dir BEFORE apt runs: ca-certificates-java is configured
+# during the openjdk-11-jdk install and crashes if /etc/ssl/certs/java is
+# missing (the Raspbian Buster deadlock). Creating it first prevents the crash;
+# the dpkg recovery below is a belt-and-suspenders fallback.
+mkdir -p /etc/ssl/certs/java
+# openjdk-11-jdk can still fail mid-configuration on Buster, so tolerate the
+# error here and let the self-heal block recover it.
 apt-get install -y openjdk-11-jdk || warning "openjdk-11-jdk install errored — attempting dpkg recovery..."
 
 # Self-heal the Buster ca-certificates-java / openjdk-11-jre-headless deadlock.
 ARCH=$(dpkg --print-architecture)
 info "Recovering Java dpkg state (arch: ${ARCH})..."
-mkdir -p /etc/ssl/certs/java
 dpkg --configure --force-depends openjdk-11-jre-headless:${ARCH} || true
 dpkg --configure ca-certificates-java || true
 dpkg --configure -a
