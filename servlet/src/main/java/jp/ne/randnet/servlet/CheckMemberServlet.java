@@ -34,7 +34,8 @@ public class CheckMemberServlet extends HttpServlet {
         if (memberId == null || memberId.isEmpty()) {
             memberId = "GUEST";
         }
-        if (diskId == null) {
+        if (diskId == null || diskId.isEmpty()) {
+            log.warning("CheckMember received request with missing DISKID from IP: " + req.getRemoteAddr());
             diskId = "";
         }
 
@@ -59,11 +60,11 @@ public class CheckMemberServlet extends HttpServlet {
     }
 
     // Returns IDSUF for the given memberId by scanning accounts.conf.
-    // Falls back to memberId.toLowerCase() if the file is absent or has no matching entry.
+    // Falls back to generateIdSufFallback() if the file is absent or has no matching entry.
     private String lookupIdSuf(String memberId) {
         File conf = new File(ACCOUNTS_CONF);
         if (!conf.exists()) {
-            return memberId.toLowerCase();
+            return generateIdSufFallback(memberId);
         }
         try (BufferedReader br = new BufferedReader(new FileReader(conf))) {
             String line;
@@ -85,6 +86,17 @@ public class CheckMemberServlet extends HttpServlet {
         } catch (IOException e) {
             log.warning("CheckMember: could not read " + ACCOUNTS_CONF + " — " + e.getMessage());
         }
-        return memberId.toLowerCase();
+        return generateIdSufFallback(memberId);
+    }
+
+    // Generates a 6-character IDSUF fallback approximating the original Randnet format.
+    // Takes the last 6 characters of MEMBERID (lowercased), left-padded with zeros.
+    // Special case: GUEST (no real member ID supplied) returns "000000".
+    private String generateIdSufFallback(String memberId) {
+        if ("GUEST".equals(memberId)) {
+            return "000000";
+        }
+        String padded = "000000" + memberId.toLowerCase();
+        return padded.substring(padded.length() - 6);
     }
 }
