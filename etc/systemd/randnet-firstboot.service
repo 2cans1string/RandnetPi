@@ -1,7 +1,7 @@
 [Unit]
 Description=RandnetPi first-boot eth0 IP configuration
 Wants=network-online.target
-After=network-online.target
+After=network-online.target dhcpcd.service
 Before=dreampi.service
 # Skip entirely once first-boot has already completed.
 ConditionPathExists=!/var/lib/randnet/firstboot-done

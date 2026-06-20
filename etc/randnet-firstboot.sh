@@ -25,18 +25,19 @@ if [ -f "$FLAG" ]; then
     exit 0
 fi
 
-# 1. Detect eth0 IP, waiting up to 30s (15 x 2s) for DHCP / link-up.
+# 1. Detect eth0 IP, waiting up to 120s (60 x 2s) for DHCP / link-up. The longer
+#    timeout covers slow DHCP on Pi 3B+ and Pi 2B hardware.
 ETH0_IP=""
-for i in $(seq 1 15); do
+for i in $(seq 1 60); do
     ETH0_IP=$(ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1)
     if [ -n "$ETH0_IP" ]; then
         break
     fi
-    log "eth0 has no IP yet (attempt ${i}/15) — waiting 2s..."
+    log "eth0 has no IP yet (attempt ${i}/60) — waiting 2s..."
     sleep 2
 done
 if [ -z "$ETH0_IP" ]; then
-    log "ERROR: eth0 still has no IP after 30s — aborting."
+    log "ERROR: eth0 still has no IP after 120s — aborting."
     exit 1
 fi
 log "Detected eth0 IP: $ETH0_IP"
