@@ -5,15 +5,6 @@
              http://xmlns.jcp.org/xml/ns/javaee/web-app_4_0.xsd"
          version="4.0">
 
-    <filter>
-        <filter-name>RandnetDD</filter-name>
-        <filter-class>jp.ne.randnet.servlet.RandnetDDServlet</filter-class>
-    </filter>
-    <filter-mapping>
-        <filter-name>RandnetDD</filter-name>
-        <url-pattern>/*</url-pattern>
-    </filter-mapping>
-
     <servlet>
         <servlet-name>CheckMember</servlet-name>
         <servlet-class>jp.ne.randnet.servlet.CheckMemberServlet</servlet-class>
@@ -89,11 +80,7 @@
     </servlet-mapping>
     <servlet-mapping>
         <servlet-name>StaticContent</servlet-name>
-        <url-pattern>/html/*</url-pattern>
-    </servlet-mapping>
-    <servlet-mapping>
-        <servlet-name>StaticContent</servlet-name>
-        <url-pattern>/randnetdd/*</url-pattern>
+        <url-pattern>/hello/*</url-pattern>
     </servlet-mapping>
 
 
