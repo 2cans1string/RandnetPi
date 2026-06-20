@@ -58,3 +58,11 @@ target/
 
 # Virtualenv
 venv/
+
+# Java build artifacts
+servlet/target/
+*.war
+
+# Docker
+Dockerfile
+docker-compose.yml
