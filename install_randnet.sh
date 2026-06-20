@@ -141,7 +141,11 @@ PYEOF
 info "Building patched pppd ${PPPD_VERSION}..."
 cd "$PPPD_SRC"
 ./configure --prefix=/usr --quiet
-make -j"$(nproc)" -C pppd pppd
+# USE_CRYPT=1 makes pppd use the built-in crypt() instead of the setkey/encrypt
+# DES symbols, which modern glibc/libcrypt removed — without it pppcrypt.c fails
+# to link with "undefined reference to setkey/encrypt". The Makefile's
+# `ifdef USE_CRYPT` branch appends -DUSE_CRYPT=1 and drops the -lcrypt link.
+make -j"$(nproc)" -C pppd pppd USE_CRYPT=1
 
 if [ -f /usr/sbin/pppd ] && [ ! -f /usr/sbin/pppd.orig ]; then
     cp /usr/sbin/pppd /usr/sbin/pppd.orig
