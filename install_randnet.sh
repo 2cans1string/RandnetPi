@@ -145,35 +145,13 @@ info "Patched pppd ${PPPD_VERSION} installed to /usr/sbin/pppd"
 cd "$SCRIPT_DIR"
 rm -rf "$BUILD_DIR"
 
-# ─── STEP 6: Install Java 21 from Adoptium ───────────────────────────────────
+# ─── STEP 6: Install Java 11 ─────────────────────────────────────────────────
 
-info "Detecting system architecture for Adoptium..."
-DEB_ARCH=$(dpkg --print-architecture 2>/dev/null || echo "unknown")
-case "$DEB_ARCH" in
-    armhf)  ADOPTIUM_ARCH="arm" ;;
-    arm64)  ADOPTIUM_ARCH="aarch64" ;;
-    amd64)  ADOPTIUM_ARCH="x64" ;;
-    *)      error "Unsupported architecture for Adoptium Java 21: $DEB_ARCH" ;;
-esac
-info "dpkg arch=${DEB_ARCH} → Adoptium arch=${ADOPTIUM_ARCH}"
-
-ADOPTIUM_URL="https://api.adoptium.net/v3/binary/latest/21/ga/linux/${ADOPTIUM_ARCH}/jdk/hotspot/normal/eclipse"
-info "Downloading Java 21 from Adoptium (${ADOPTIUM_ARCH})..."
-wget -q -L --show-progress -O /tmp/temurin-21.tar.gz "$ADOPTIUM_URL" \
-    || error "Failed to download Java 21 from Adoptium"
-
-mkdir -p /opt/java
-tar -xzf /tmp/temurin-21.tar.gz -C /opt/java
-TEMURIN_DIR=$(find /opt/java -maxdepth 1 -type d -name "jdk-21*" | head -1)
-[ -n "$TEMURIN_DIR" ] || error "Could not find extracted Temurin JDK in /opt/java"
-ln -sfn "$TEMURIN_DIR" /opt/java/temurin-21
-JAVA_HOME=/opt/java/temurin-21
-export JAVA_HOME
-export PATH="$JAVA_HOME/bin:$PATH"
-
-grep -qxF "JAVA_HOME=/opt/java/temurin-21" /etc/environment \
-    || echo "JAVA_HOME=/opt/java/temurin-21" >> /etc/environment
-info "Java 21 installed: $("$JAVA_HOME/bin/java" -version 2>&1 | head -1)"
+info "Installing Java 11..."
+apt-get install -y openjdk-11-jdk
+JAVA_HOME=$(dirname $(dirname $(readlink -f /usr/bin/java)))
+echo "JAVA_HOME=${JAVA_HOME}" >> /etc/environment
+info "Java 11 installed — JAVA_HOME=${JAVA_HOME}"
 
 # ─── STEP 7: Install Apache Tomcat 9.0.118 ───────────────────────────────────
 
@@ -201,7 +179,7 @@ After=network.target
 Type=forking
 User=tomcat
 Group=tomcat
-Environment="JAVA_HOME=${JAVA_HOME}"
+Environment="JAVA_HOME=$(dirname $(dirname $(readlink -f /usr/bin/java)))"
 Environment="CATALINA_PID=/opt/tomcat/temp/tomcat.pid"
 Environment="CATALINA_HOME=/opt/tomcat"
 Environment="CATALINA_BASE=/opt/tomcat"
