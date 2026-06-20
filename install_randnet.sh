@@ -1,221 +1,178 @@
 #!/bin/bash
-# install_randnet.sh — Full Randnet 64DD revival setup
+# install_randnet.sh — Full RandnetPi installer
 #
-# Installs everything needed to run the full Randnet revival stack on a single
-# Raspberry Pi (DreamPi + Randnet server in one device) or Ubuntu server.
+# Installs the complete Randnet 64DD revival stack on a single Raspberry Pi:
+#   pppd 2.4.7 (patched) + CHAP bypass plugin + Tomcat 9 + Squid + dnsmasq
 #
-# Edit the variables below before running.
+# All Randnet server IPs are routed to localhost — no separate server needed.
 #
-# Usage:  chmod +x install_randnet.sh && sudo ./install_randnet.sh
+# Usage: sudo ./install_randnet.sh
 
 set -e
 
-# ─── Configuration ────────────────────────────────────────────────────────────
-
-RANDNET_SERVER_IP="YOUR_RANDNET_SERVER_IP"   # LAN IP of this machine
 TOMCAT_VERSION="9.0.118"
-REVIVAL_REPO="https://github.com/2cans1string/RandnetRevival.git"
+PPPD_VERSION="2.4.7"
+PPPD_SRC_URLS=(
+    "http://deb.debian.org/debian/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
+    "http://archive.debian.org/debian/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
+)
+TOMCAT_URL="https://archive.apache.org/dist/tomcat/tomcat-9/v${TOMCAT_VERSION}/bin/apache-tomcat-${TOMCAT_VERSION}.tar.gz"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# ─── Architecture detection ───────────────────────────────────────────────────
-
-ARCH=$(uname -m)
-case "$ARCH" in
-    aarch64) ARCH_LABEL="ARM64 (aarch64)" ;;
-    armv7l)  ARCH_LABEL="ARM32 (armv7l)"  ;;
-    x86_64)  ARCH_LABEL="x86_64"          ;;
-    *)       ARCH_LABEL="unknown ($ARCH)"  ;;
-esac
-
-echo "=================================================="
-echo " Randnet 64DD Revival — Full Install"
-echo "=================================================="
-echo " Architecture : $ARCH_LABEL"
-echo " Server IP    : $RANDNET_SERVER_IP"
-echo " Tomcat       : $TOMCAT_VERSION"
-echo "=================================================="
-echo ""
-
-if [ "$RANDNET_SERVER_IP" = "YOUR_RANDNET_SERVER_IP" ]; then
-    echo "ERROR: Edit RANDNET_SERVER_IP at the top of this script before running."
-    exit 1
-fi
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "ERROR: Run as root or with sudo."
     exit 1
 fi
 
-# ─── Stage 1: System update + all dependencies ────────────────────────────────
-# Install everything before iptables port-80 redirect breaks apt.
+# ─── Architecture detection via file /usr/sbin/pppd ──────────────────────────
 
+PPPD_BIN=$(command -v pppd 2>/dev/null || echo "/usr/sbin/pppd")
+FILE_OUT=$(file "$PPPD_BIN" 2>/dev/null || echo "unknown")
+
+if echo "$FILE_OUT" | grep -qi "aarch64"; then
+    ARCH="aarch64"
+    MARCH_FLAG="-march=armv8-a"
+elif echo "$FILE_OUT" | grep -qi "ARM"; then
+    ARCH="armv7l"
+    MARCH_FLAG="-march=armv7-a"
+elif echo "$FILE_OUT" | grep -qi "x86-64"; then
+    ARCH="x86_64"
+    MARCH_FLAG="-march=x86-64"
+else
+    ARCH="unknown"
+    MARCH_FLAG=""
+    echo "WARNING: Unrecognised architecture — compiling without -march flag"
+fi
+
+echo "=================================================="
+echo " RandnetPi — Full Stack Installer"
+echo "=================================================="
+echo " Architecture : $ARCH  ($FILE_OUT)"
+echo " pppd source  : $PPPD_VERSION (Debian archive)"
+echo " Tomcat       : $TOMCAT_VERSION"
+echo "=================================================="
 echo ""
+
+# ─── Stage 1: System dependencies ────────────────────────────────────────────
+# All packages installed before port-80 iptables redirect so apt stays intact.
+
 echo "[1/9] Installing system dependencies..."
 apt-get update -y
 apt-get install -y \
     openjdk-21-jdk \
     maven \
-    git \
     gcc \
     make \
+    build-essential \
+    libssl-dev \
+    libpam0g-dev \
     ppp \
     squid \
     dnsmasq \
     iptables \
-    dpkg-dev \
-    devscripts \
     python3 \
+    file \
     wget \
     curl
 
 JAVA_HOME=$(readlink -f /usr/bin/java | sed 's|/bin/java||')
-echo "JAVA_HOME detected: $JAVA_HOME"
+echo "  JAVA_HOME: $JAVA_HOME"
 
-# ─── Stage 2: pppd CHAP bypass plugin ────────────────────────────────────────
+# ─── Stage 2: Download pppd 2.4.7 source from Debian archive ─────────────────
 
 echo ""
-echo "[2/9] Building and installing randnet_chap.so..."
-cd "$SCRIPT_DIR/pppd_plugin"
-make randnet_chap.so
-install -m 755 randnet_chap.so /etc/ppp/
+echo "[2/9] Downloading pppd ${PPPD_VERSION} source..."
+BUILD_DIR=$(mktemp -d /tmp/randnet-build.XXXXXX)
+
+DOWNLOADED=0
+for URL in "${PPPD_SRC_URLS[@]}"; do
+    echo "  Trying $URL"
+    if wget -q -O "${BUILD_DIR}/ppp.tar.gz" "$URL"; then
+        DOWNLOADED=1
+        break
+    fi
+done
+
+if [ "$DOWNLOADED" -eq 0 ]; then
+    echo "ERROR: Could not download pppd ${PPPD_VERSION} source."
+    exit 1
+fi
+
+tar -xzf "${BUILD_DIR}/ppp.tar.gz" -C "$BUILD_DIR"
+PPPD_SRC=$(find "$BUILD_DIR" -maxdepth 1 -type d -name "ppp-*" | head -1)
+
+if [ -z "$PPPD_SRC" ]; then
+    echo "ERROR: Could not find pppd source directory after extraction."
+    exit 1
+fi
+echo "  Extracted to $PPPD_SRC"
+
+# ─── Stage 3: Compile randnet_chap.so ────────────────────────────────────────
+# Build against pppd 2.4.7 headers so the plugin ABI matches the binary
+# we're about to install.
+
+echo ""
+echo "[3/9] Compiling randnet_chap.so (arch: $ARCH)..."
+gcc $MARCH_FLAG -fPIC -shared \
+    -I "${PPPD_SRC}/pppd" \
+    -o "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" \
+    "${SCRIPT_DIR}/pppd_plugin/randnet_chap.c"
+install -m 755 "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" /etc/ppp/
 echo "  randnet_chap.so → /etc/ppp/"
-cd "$SCRIPT_DIR"
 
-# ─── Stage 3: pppd auth_ip_addr patch ────────────────────────────────────────
-# pppd's auth_ip_addr() rejects the 64DD's PPP IP because it has no matching
-# secrets entry (we use noauth). We patch it to always return 1 (authorized).
-# Approach: build pppd from source with a one-line patch, then install.
+# ─── Stage 4: Patch auth_ip_addr() and compile pppd ─────────────────────────
+# pppd rejects the 64DD's PPP peer IP because it has no matching secrets entry.
+# Patching auth_ip_addr() to always return 1 accepts any peer IP.
 
 echo ""
-echo "[3/9] Patching pppd auth_ip_addr..."
+echo "[4/9] Patching and compiling pppd ${PPPD_VERSION}..."
 
-PPPD_BIN=$(which pppd 2>/dev/null || echo "/usr/sbin/pppd")
-PPPD_VER=$("$PPPD_BIN" --version 2>&1 | awk '{print $3}' | tr -d '[:space:]')
-echo "  pppd $PPPD_VER at $PPPD_BIN"
+AUTH_C="${PPPD_SRC}/pppd/auth.c"
 
-BUILD_DIR=$(mktemp -d /tmp/pppd-build.XXXXXX)
-PATCHED=0
-
-# Try source build first (reliable, arch-independent)
-if apt-get source ppp -y --download-only 2>/dev/null; then
-    # Move source files to build dir
-    find . -maxdepth 1 -name "ppp_*.dsc" -o -name "ppp_*.tar.*" | xargs -I{} mv {} "$BUILD_DIR/" 2>/dev/null || true
-    cd "$BUILD_DIR"
-
-    # Extract
-    DSC=$(find . -name "*.dsc" | head -1)
-    if [ -n "$DSC" ]; then
-        dpkg-source -x "$DSC" src/ 2>/dev/null
-        AUTH_C=$(find src -name "auth.c" | grep pppd | head -1)
-
-        if [ -n "$AUTH_C" ]; then
-            # Patch: add 'return 1;' as first statement of auth_ip_addr()
-            python3 - "$AUTH_C" <<'PYEOF'
+python3 - "$AUTH_C" <<'PYEOF'
 import re, sys
 path = sys.argv[1]
 with open(path) as f:
     src = f.read()
-# Match the function definition and insert early return after the opening brace
+# Insert 'return 1;' as the first statement in auth_ip_addr()
 patched = re.sub(
     r'(auth_ip_addr\s*\([^)]*\)\s*\n\{)',
     r'\1\n    return 1; /* Randnet 64DD: accept any peer IP */',
     src
 )
 if patched == src:
-    # Try older-style K&R definition
     patched = re.sub(
-        r'(auth_ip_addr\s*\(unit,\s*addr\)[^\{]*\{)',
+        r'(int\s+auth_ip_addr\b[^{]*\{)',
         r'\1\n    return 1; /* Randnet 64DD: accept any peer IP */',
         src, flags=re.DOTALL
     )
+if patched == src:
+    print("ERROR: auth_ip_addr pattern not found in", path, file=sys.stderr)
+    sys.exit(1)
 with open(path, 'w') as f:
     f.write(patched)
 print("  auth_ip_addr patched in", path)
 PYEOF
 
-            # Build the patched pppd binary
-            cd src/
-            dpkg-buildpackage -b -uc -us 2>/dev/null && PATCHED=1 || true
-            cd ..
-
-            if [ "$PATCHED" -eq 1 ]; then
-                PPPD_DEB=$(find . -name "ppp_*.deb" | head -1)
-                if [ -n "$PPPD_DEB" ]; then
-                    dpkg -i "$PPPD_DEB"
-                    echo "  pppd installed from patched source package"
-                fi
-            fi
-        fi
-    fi
-fi
-
+cd "${PPPD_SRC}"
+./configure --prefix=/usr --quiet
+make -j"$(nproc)" -C pppd pppd
+install -m 755 -o root -g root pppd/pppd /usr/sbin/pppd
+echo "  Patched pppd ${PPPD_VERSION} installed to /usr/sbin/pppd"
 cd "$SCRIPT_DIR"
 
-# Fall back to binary patch if source build didn't work
-if [ "$PATCHED" -eq 0 ]; then
-    echo "  Source build unavailable — attempting binary patch..."
-    if [ -f "${PPPD_BIN}.orig" ]; then
-        echo "  Backup ${PPPD_BIN}.orig already exists — skipping"
-    else
-        cp "$PPPD_BIN" "${PPPD_BIN}.orig"
-    fi
-
-    python3 - "$PPPD_BIN" "$ARCH" <<'PYEOF'
-import sys, os
-
-pppd_path = sys.argv[1]
-arch      = sys.argv[2]
-
-with open(pppd_path, 'rb') as f:
-    data = bytearray(f.read())
-
-# Patterns: "return 0" epilogue for auth_ip_addr, by architecture
-patterns = {
-    'aarch64': (
-        bytes([0x00, 0x00, 0x80, 0x52, 0xC0, 0x03, 0x5F, 0xD6]),  # MOV W0,#0 ; RET
-        bytes([0x20, 0x00, 0x80, 0x52, 0xC0, 0x03, 0x5F, 0xD6]),  # MOV W0,#1 ; RET
-    ),
-    'armv7l': (
-        bytes([0x00, 0x00, 0xA0, 0xE3, 0x1E, 0xFF, 0x2F, 0xE1]),  # MOV R0,#0 ; BX LR
-        bytes([0x01, 0x00, 0xA0, 0xE3, 0x1E, 0xFF, 0x2F, 0xE1]),  # MOV R0,#1 ; BX LR
-    ),
-}
-
-if arch not in patterns:
-    print(f"  Binary patch not supported for arch {arch} — skipping")
-    sys.exit(0)
-
-needle, replacement = patterns[arch]
-idx = data.find(needle)
-if idx < 0:
-    print(f"  Pattern not found in {pppd_path} — manual patch may be required")
-    sys.exit(0)
-
-data[idx:idx + len(replacement)] = replacement
-with open(pppd_path, 'wb') as f:
-    f.write(data)
-print(f"  auth_ip_addr patched at offset {idx:#x}")
-PYEOF
-    PATCHED=$?
-fi
-
-rm -rf "$BUILD_DIR"
-
-# ─── Stage 4: Apache Tomcat 9 ─────────────────────────────────────────────────
+# ─── Stage 5: Apache Tomcat 9 ────────────────────────────────────────────────
 
 echo ""
-echo "[4/9] Installing Apache Tomcat $TOMCAT_VERSION..."
+echo "[5/9] Installing Apache Tomcat ${TOMCAT_VERSION}..."
 
 if ! id tomcat &>/dev/null; then
     useradd -m -U -d /opt/tomcat -s /bin/false tomcat
 fi
 
-TOMCAT_TGZ="apache-tomcat-${TOMCAT_VERSION}.tar.gz"
-TOMCAT_URL="https://dlcdn.apache.org/tomcat/tomcat-9/v${TOMCAT_VERSION}/bin/${TOMCAT_TGZ}"
-
-wget -q -O "/tmp/${TOMCAT_TGZ}" "$TOMCAT_URL"
+wget -q -O "/tmp/apache-tomcat-${TOMCAT_VERSION}.tar.gz" "$TOMCAT_URL"
 mkdir -p /opt/tomcat
-tar -xzf "/tmp/${TOMCAT_TGZ}" -C /opt/tomcat --strip-components=1
+tar -xzf "/tmp/apache-tomcat-${TOMCAT_VERSION}.tar.gz" -C /opt/tomcat --strip-components=1
 chown -R tomcat:tomcat /opt/tomcat
 chmod -R 755 /opt/tomcat
 
@@ -249,67 +206,56 @@ systemctl enable tomcat
 systemctl start tomcat
 echo "  Tomcat started"
 
-# ─── Stage 5: Build and deploy Randnet servlet WAR ───────────────────────────
-# Clone RandnetRevival, inject server IP, build, deploy as ROOT.war.
-# Must happen before iptables port-80 redirect (Maven needs internet access).
+# ─── Stage 6: Build and deploy ROOT.war ──────────────────────────────────────
+# Build from local servlet/ directory — no external repo clone needed.
+# Must run before stage 7 iptables redirect so Maven can reach the internet.
 
 echo ""
-echo "[5/9] Building and deploying Randnet servlet WAR..."
-
-SERVLET_BUILD_DIR=$(mktemp -d /tmp/randnet-servlet.XXXXXX)
-git clone --depth=1 "$REVIVAL_REPO" "$SERVLET_BUILD_DIR/repo"
-
-# Inject this machine's IP into GetCommunicationConfigServlet
-GSCONFIG="$SERVLET_BUILD_DIR/repo/servlet/src/main/java/jp/ne/randnet/servlet/GetCommunicationConfigServlet.java"
-if [ -f "$GSCONFIG" ]; then
-    sed -i "s/YOUR_RANDNET_SERVER_IP/$RANDNET_SERVER_IP/g" "$GSCONFIG"
-fi
-
-# Build
-cd "$SERVLET_BUILD_DIR/repo/servlet"
+echo "[6/9] Building ROOT.war from ${SCRIPT_DIR}/servlet/..."
+cd "${SCRIPT_DIR}/servlet"
 mvn clean package -q
-
-# Deploy
-cp target/randnet.war /opt/tomcat/webapps/ROOT.war
+cp target/ROOT.war /opt/tomcat/webapps/ROOT.war
 chown tomcat:tomcat /opt/tomcat/webapps/ROOT.war
-echo "  ROOT.war deployed to Tomcat"
+echo "  ROOT.war deployed"
 
-cd "$SCRIPT_DIR"
-rm -rf "$SERVLET_BUILD_DIR"
-
-# Wait for Tomcat to deploy ROOT.war
-echo -n "  Waiting for Tomcat deployment"
-for i in $(seq 1 15); do
-    if curl -s http://localhost:8080/servlet/GetNewVersion | grep -q "RESULT=OK"; then
+echo -n "  Waiting for Tomcat to deploy ROOT.war"
+for i in $(seq 1 20); do
+    if curl -sf http://localhost:8080/servlet/GetNewVersion | grep -q "RESULT=OK"; then
         echo " OK"
         break
     fi
     echo -n "."
     sleep 2
 done
+cd "$SCRIPT_DIR"
 
-# ─── Stage 6: iptables — port 80 → 8080 + proxy exemption ───────────────────
-# Set up AFTER Maven is done.
+# ─── Stage 7: iptables rules ─────────────────────────────────────────────────
+# Applied AFTER Maven so port-80 redirect does not break package downloads.
 
 echo ""
-echo "[6/9] Configuring iptables (server-side)..."
+echo "[7/9] Configuring iptables..."
 
-# Port 80 → 8080 (Tomcat redirect)
+# Port 80 → 8080 (Tomcat) for all incoming and locally-generated traffic
 iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8080
-iptables -t nat -A OUTPUT -p tcp --dport 80 -m owner ! --uid-owner proxy -j REDIRECT --to-port 8080
+iptables -t nat -A OUTPUT -p tcp --dport 80 -m owner ! --uid-owner proxy \
+    -j REDIRECT --to-port 8080
 
-# DreamPi-side DNAT rules — all Randnet IPs route to localhost (all-in-one Pi)
+# MASQUERADE for PPP → eth0
 iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+
+# DNAT 172.16.10.41:8080 and 172.16.10.40:8080 → Squid on localhost:3128
 for RNET_IP in 172.16.10.41 172.16.10.40; do
     iptables -t nat -A PREROUTING -i ppp0 -d "$RNET_IP" -p tcp --dport 8080 \
         -j DNAT --to-destination 127.0.0.1:3128
 done
+
+# DNAT 172.16.10.30 and 172.16.10.31 → Tomcat on localhost:8080
 for RNET_IP in 172.16.10.30 172.16.10.31; do
     iptables -t nat -A PREROUTING -i ppp0 -d "$RNET_IP" \
         -j DNAT --to-destination 127.0.0.1:8080
 done
 
-# Persist
+# Persist rules so they survive reboot
 mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4
 
@@ -329,14 +275,13 @@ EOF
 
 systemctl daemon-reload
 systemctl enable iptables-restore
-echo "  iptables rules saved and will restore on boot"
+echo "  iptables rules applied and persisted via systemd"
 
-# ─── Stage 7: Squid proxy ────────────────────────────────────────────────────
+# ─── Stage 8: Squid proxy ────────────────────────────────────────────────────
 
 echo ""
-echo "[7/9] Configuring Squid..."
+echo "[8/9] Configuring Squid on port 3128..."
 
-# Allow 64DD PPP range (10.200.x.x) and local connections
 cat > /etc/squid/conf.d/randnet.conf <<'EOF'
 acl randnet_ppp src 10.200.0.0/16
 http_access allow randnet_ppp
@@ -348,15 +293,14 @@ systemctl enable squid
 systemctl restart squid
 echo "  Squid configured on port 3128"
 
-# ─── Stage 8: dnsmasq ────────────────────────────────────────────────────────
+# ─── Stage 9: dnsmasq + IP forwarding + accounts config ──────────────────────
 
 echo ""
-echo "[8/9] Configuring dnsmasq..."
+echo "[9/9] Configuring dnsmasq, IP forwarding, and accounts..."
 
 mkdir -p /etc/dnsmasq.d
-cp "$SCRIPT_DIR/etc/dnsmasq.d/randnet.conf" /etc/dnsmasq.d/
+cp "${SCRIPT_DIR}/etc/dnsmasq.d/randnet.conf" /etc/dnsmasq.d/
 
-# Enable conf-dir if not already active
 if [ -f /etc/dnsmasq.conf ]; then
     if grep -q "^#conf-dir=/etc/dnsmasq.d" /etc/dnsmasq.conf; then
         sed -i 's|^#conf-dir=/etc/dnsmasq.d|conf-dir=/etc/dnsmasq.d|' /etc/dnsmasq.conf
@@ -367,38 +311,40 @@ fi
 
 systemctl enable dnsmasq
 systemctl restart dnsmasq
-echo "  dnsmasq configured (randnet.ne.jp → 127.0.0.1)"
-
-# ─── Stage 9: IP forwarding ───────────────────────────────────────────────────
-
-echo ""
-echo "[9/9] Enabling IP forwarding..."
+echo "  dnsmasq configured (*.randnet.ne.jp → 127.0.0.1)"
 
 echo 1 > /proc/sys/net/ipv4/ip_forward
-
 if grep -q "^#*net.ipv4.ip_forward" /etc/sysctl.conf; then
     sed -i 's/^#*net.ipv4.ip_forward.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
 else
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 fi
+echo "  IP forwarding enabled"
 
-# ─── Summary ──────────────────────────────────────────────────────────────────
+mkdir -p /etc/randnet
+if [ ! -f /etc/randnet/accounts.conf ]; then
+    cp "${SCRIPT_DIR}/etc/randnet/accounts.conf.example" /etc/randnet/accounts.conf
+    echo "  Created /etc/randnet/accounts.conf — edit before connecting"
+fi
+
+# ─── Cleanup + summary ───────────────────────────────────────────────────────
+
+rm -rf "$BUILD_DIR"
 
 echo ""
 echo "=================================================="
-echo " Randnet 64DD Revival — Install Complete"
+echo " RandnetPi — Install Complete"
 echo "=================================================="
 echo ""
 echo " Verification:"
-echo "   Tomcat servlet: curl http://localhost/servlet/GetNewVersion"
-echo "   Squid proxy:    curl -x http://localhost:3128 http://example.com/ | head -3"
+echo "   Servlet:  curl http://localhost/servlet/GetNewVersion"
+echo "   Squid:    curl -x http://localhost:3128 http://example.com/ | head -3"
 echo ""
 echo " Next steps:"
-echo "   1. Add your disk credentials to CheckMemberServlet.java,"
-echo "      rebuild ROOT.war, and deploy to /opt/tomcat/webapps/"
-echo "   2. Confirm RANDNET_SERVER_IP=$RANDNET_SERVER_IP in dreampi.py"
-echo "   3. Start dreampi: sudo python dreampi.py start"
-echo "   4. Watch logs:    sudo tail -f /opt/tomcat/logs/catalina.out"
+echo "   1. Edit /etc/randnet/accounts.conf with your Randnet disk credentials"
+echo "   2. Start dreampi: sudo python ${SCRIPT_DIR}/dreampi.py start"
+echo "   3. Watch logs:    sudo tail -f /opt/tomcat/logs/catalina.out"
 echo ""
-echo " pppd binary: $(which pppd) — backup at $(which pppd).orig (if patched)"
+echo " pppd:  /usr/sbin/pppd (patched — auth_ip_addr always returns 1)"
+echo " CHAP:  /etc/ppp/randnet_chap.so"
 echo "=================================================="
