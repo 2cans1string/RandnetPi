@@ -1,0 +1,4 @@
+# Randnet accounts config
+# Format: MEMBERID:MEMBERPW:DISKID:IDSUF
+# Add one line per registered Randnet disk
+# fwhw1901:1111:DRDJ0:pt1702
