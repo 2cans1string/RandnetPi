@@ -1,7 +1,7 @@
 # RandnetPi
-## Nintendo 64DD Randnet Revival — DreamPi Configuration
+## Nintendo 64DD Randnet online service revival
 
-> Modified DreamPi daemon for the Nintendo 64DD Randnet online service revival.
+> A modified DreamPi that revives the original Japanese Randnet dial-up internet service for the Nintendo 64DD (December 1999 - February 2001).
 
 ---
 
