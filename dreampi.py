@@ -416,30 +416,37 @@ def remove_syn_check():
         "--rsource", "--rdest", "--set"
     ])
 
-RANDNET_SERVER_IP = "YOUR_RANDNET_SERVER_IP"
-
 def add_randnet_nat_rules():
+    # MASQUERADE outgoing traffic through eth0
     iptables_add_if_missing([
         "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"
     ])
-    iptables_add_if_missing([
-        "iptables", "-A", "FORWARD", "-i", "ppp0", "-o", "eth0", "-j", "ACCEPT"
-    ])
-    iptables_add_if_missing([
-        "iptables", "-A", "FORWARD", "-i", "eth0", "-o", "ppp0",
-        "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"
-    ])
-    for ip in ["172.16.10.30", "172.16.10.31", "172.16.10.40"]:
-        iptables_add_if_missing([
-            "iptables", "-t", "nat", "-A", "PREROUTING",
-            "-i", "ppp0", "-d", ip, "-j", "DNAT",
-            "--to-destination", RANDNET_SERVER_IP
-        ])
+    # Port 80 → 8080 (Tomcat) — all incoming traffic
     iptables_add_if_missing([
         "iptables", "-t", "nat", "-A", "PREROUTING",
-        "-i", "ppp0", "-d", "172.16.10.41", "-p", "tcp", "--dport", "8080",
-        "-j", "DNAT", "--to-destination", RANDNET_SERVER_IP + ":3128"
+        "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", "8080"
     ])
+    # Port 80 → 8080 for locally-originated traffic, exempting the proxy user (Squid)
+    iptables_add_if_missing([
+        "iptables", "-t", "nat", "-A", "OUTPUT",
+        "-p", "tcp", "--dport", "80",
+        "-m", "owner", "!", "--uid-owner", "proxy",
+        "-j", "REDIRECT", "--to-port", "8080"
+    ])
+    # DNAT 172.16.10.41:8080 and 172.16.10.40:8080 → Squid on localhost:3128
+    for ip in ["172.16.10.41", "172.16.10.40"]:
+        iptables_add_if_missing([
+            "iptables", "-t", "nat", "-A", "PREROUTING",
+            "-i", "ppp0", "-d", ip, "-p", "tcp", "--dport", "8080",
+            "-j", "DNAT", "--to-destination", "127.0.0.1:3128"
+        ])
+    # DNAT 172.16.10.30 and 172.16.10.31 → Tomcat on localhost:8080
+    for ip in ["172.16.10.30", "172.16.10.31"]:
+        iptables_add_if_missing([
+            "iptables", "-t", "nat", "-A", "PREROUTING",
+            "-i", "ppp0", "-d", ip,
+            "-j", "DNAT", "--to-destination", "127.0.0.1:8080"
+        ])
     logger.info("Randnet NAT rules added")
 
 def remove_randnet_nat_rules():
@@ -447,23 +454,27 @@ def remove_randnet_nat_rules():
         "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"
     ])
     subprocess.call([
-        "iptables", "-D", "FORWARD", "-i", "ppp0", "-o", "eth0", "-j", "ACCEPT"
+        "iptables", "-t", "nat", "-D", "PREROUTING",
+        "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", "8080"
     ])
     subprocess.call([
-        "iptables", "-D", "FORWARD", "-i", "eth0", "-o", "ppp0",
-        "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"
+        "iptables", "-t", "nat", "-D", "OUTPUT",
+        "-p", "tcp", "--dport", "80",
+        "-m", "owner", "!", "--uid-owner", "proxy",
+        "-j", "REDIRECT", "--to-port", "8080"
     ])
-    for ip in ["172.16.10.30", "172.16.10.31", "172.16.10.40"]:
+    for ip in ["172.16.10.41", "172.16.10.40"]:
         subprocess.call([
             "iptables", "-t", "nat", "-D", "PREROUTING",
-            "-i", "ppp0", "-d", ip, "-j", "DNAT",
-            "--to-destination", RANDNET_SERVER_IP
+            "-i", "ppp0", "-d", ip, "-p", "tcp", "--dport", "8080",
+            "-j", "DNAT", "--to-destination", "127.0.0.1:3128"
         ])
-    subprocess.call([
-        "iptables", "-t", "nat", "-D", "PREROUTING",
-        "-i", "ppp0", "-d", "172.16.10.41", "-p", "tcp", "--dport", "8080",
-        "-j", "DNAT", "--to-destination", RANDNET_SERVER_IP + ":3128"
-    ])
+    for ip in ["172.16.10.30", "172.16.10.31"]:
+        subprocess.call([
+            "iptables", "-t", "nat", "-D", "PREROUTING",
+            "-i", "ppp0", "-d", ip,
+            "-j", "DNAT", "--to-destination", "127.0.0.1:8080"
+        ])
     logger.info("Randnet NAT rules removed")
 
 def is_service_running(name):
