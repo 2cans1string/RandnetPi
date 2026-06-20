@@ -12,8 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PPPD_VERSION="2.4.7"
 PPPD_SRC_URLS=(
     "https://snapshot.debian.org/archive/debian/20210101T000000Z/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
-    "http://ftp.debian.org/debian/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
-    "http://deb.debian.org/debian/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
+    "https://snapshot.debian.org/archive/debian/20200601T000000Z/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
+    "https://snapshot.debian.org/archive/debian/20190101T000000Z/pool/main/p/ppp/ppp_${PPPD_VERSION}.orig.tar.gz"
 )
 TOMCAT_VERSION="9.0.118"
 TOMCAT_URL="https://dlcdn.apache.org/tomcat/tomcat-9/v${TOMCAT_VERSION}/bin/apache-tomcat-${TOMCAT_VERSION}.tar.gz"

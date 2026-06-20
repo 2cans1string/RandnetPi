@@ -20,7 +20,7 @@ The Nintendo 64DD used a dial-up modem and the [Randnet](https://en.wikipedia.or
 
 ## Hardware Required
 
-- **Raspberry Pi** (tested on Pi 3B+) with USB modem adapter
+- **Raspberry Pi** (target platform Raspberry Pi 4 with DreamPi 2.0.1 Raspbian Buster) with USB modem adapter
 - **Nintendo 64** with **64DD** expansion unit
 - **Randnet disk** (original Japanese release)
 
@@ -33,22 +33,28 @@ The Nintendo 64DD used a dial-up modem and the [Randnet](https://en.wikipedia.or
 ```bash
 git clone https://github.com/2cans1string/RandnetPi.git
 cd RandnetPi
-# Edit RANDNET_SERVER_IP at the top of install_randnet.sh (use this Pi's LAN IP)
 sudo ./install_randnet.sh
 ```
+
+All services (Tomcat, Squid, dnsmasq) run locally on the Pi and Randnet's
+hardcoded server IPs are routed to localhost via iptables — there is no server
+IP to configure.
 
 The installer handles:
 - pppd CHAP bypass plugin build and install
 - pppd `auth_ip_addr` patch (source build or binary patch)
-- Java 21 + Apache Tomcat 9
+- OpenJDK 11 + Apache Tomcat 9
 - Randnet servlet WAR deployment
 - iptables rules (port 80 → 8080, DNAT for Randnet IPs)
 - Squid proxy
 - dnsmasq configuration
 
-### 2. Add your disk credentials
+### 2. Add your disk credentials (optional)
 
-Edit `CheckMemberServlet.java` in the RandnetRevival repo with your Randnet disk account details, rebuild the WAR, and redeploy to `/opt/tomcat/webapps/ROOT.war`.
+`CheckMemberServlet` accepts all connections by default. To map specific
+accounts to their original Randnet IDSUF, populate `/etc/randnet/accounts.conf`
+(format `MEMBERID:MEMBERPW:DISKID:IDSUF`); otherwise a generated fallback IDSUF
+is used.
 
 ### 3. Start the daemon
 
@@ -97,13 +103,12 @@ RandnetPi (Raspberry Pi + USB modem)
 
 ---
 
-> **Warning — servlet code is placeholder only**
+> **Note — servlet implementation status**
 >
-> The files in `servlet/` are placeholder stubs. The servlet implementation
-> lives in the separate [RandnetRevival](https://github.com/2cans1string/RandnetRevival)
-> repository. **Do not attempt to use this with a physical Randnet disk** until
-> the correct account credentials have been added to `CheckMemberServlet.java`
-> and a working WAR has been built and deployed.
+> The servlet source in `servlet/` is included and functional. The one
+> exception is `GetCommunicationConfig`, which is intentionally not implemented
+> (returns `RC=9999`) pending a safe 64DD disk-write solution. All other
+> servlets are functional.
 
 ---
 
