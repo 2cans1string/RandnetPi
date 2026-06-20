@@ -606,7 +606,7 @@ def autoconfigure_ppp(device, speed):
        Returns the IP allocated to the Dreamcast
     """
 
-    PEERS_TEMPLATE = "{device}\n" "{device_speed}\n" "{this_ip}:{dc_ip}\n" "noauth\n" "plugin /etc/ppp/randnet_chap.so\n"
+    PEERS_TEMPLATE = "{device}\n" "{device_speed}\n" "{this_ip}:{dc_ip}\n" "auth\n" "plugin randnet_chap.so\n" "ms-dns {this_ip}\n" "noipdefault\n"
 
     OPTIONS_TEMPLATE = "debug\n" "ms-dns {this_ip}\n" "proxyarp\n" "ktune\n" "noccp\n"
 

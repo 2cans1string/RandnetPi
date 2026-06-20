@@ -88,8 +88,15 @@ else
     info "Architecture verified: pppd and randnet_chap.so ELF width match."
 fi
 
-install -m 755 "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" /etc/ppp/randnet_chap.so
-info "randnet_chap.so installed to /etc/ppp/randnet_chap.so"
+# pppd loads the plugin by BARE NAME from its compiled-in plugin directory.
+# Install to both the prefix=/usr (/usr/lib) and prefix=/usr/local version dirs
+# so the plugin is found regardless of how pppd was configured. Do NOT install to
+# /etc/ppp — pppd does not search there for bare-name plugins.
+for plugdir in "/usr/lib/pppd/${PPPD_VERSION}" "/usr/local/lib/pppd/${PPPD_VERSION}"; do
+    mkdir -p "$plugdir"
+    install -m 755 "${SCRIPT_DIR}/pppd_plugin/randnet_chap.so" "$plugdir/randnet_chap.so"
+    info "randnet_chap.so installed to $plugdir/randnet_chap.so"
+done
 
 # ─── STEP 5: Download, patch, and build pppd 2.4.7 ───────────────────────────
 
@@ -142,38 +149,19 @@ info "Building patched pppd ${PPPD_VERSION}..."
 cd "$PPPD_SRC"
 ./configure --prefix=/usr --quiet
 
-# pppd/pppcrypt.c calls the glibc DES primitives setkey()/encrypt(), which modern
-# glibc removed, causing "undefined reference to setkey/encrypt" at link time.
-# These are only reached by MS-CHAP DES, which our CHAP bypass never invokes, so
-# we stub out the three offending calls. We keep USE_CRYPT=1 (below) so pppd uses
-# this libcrypt code path rather than the #else branch, which would pull in a
-# libdes/libcrypto dependency we don't install.
-info "Stubbing out setkey/encrypt calls in pppd/pppcrypt.c..."
-python3 - "pppd/pppcrypt.c" <<'PYEOF'
-import re, sys
-path = sys.argv[1]
-# Match a bare setkey(/encrypt( used as a statement (ends in ');'). This excludes
-# prose inside /* */ comments (no trailing ';') and des_ecb_encrypt( in the #else
-# branch (the lookbehind rejects a preceding identifier character).
-pat = re.compile(r'(?<![A-Za-z0-9_])(setkey|encrypt)\s*\([^;]*\)\s*;')
-out, n = [], 0
-for line in open(path):
-    if pat.search(line):
-        indent = re.match(r'[ \t]*', line).group(0)
-        out.append(indent + "/* RandnetPi: setkey/encrypt stubbed out (MS-CHAP DES unused; removed from modern glibc) */\n")
-        n += 1
-    else:
-        out.append(line)
-if n == 0:
-    print("WARNING: no setkey/encrypt statements found to stub in " + path, file=sys.stderr)
-open(path, 'w').writelines(out)
-print("Stubbed %d setkey/encrypt call(s) in %s" % (n, path))
-PYEOF
-
-# USE_CRYPT=1 selects the libcrypt DES branch above (now stubbed) instead of the
-# #else branch that requires libdes; the Makefile's `ifdef USE_CRYPT` also drops
-# the -lcrypt link.
-make -j"$(nproc)" -C pppd pppd USE_CRYPT=1
+# Build pppd WITHOUT MS-CHAP and MPPE. Setting CHAPMS= and MPPE= empty stops the
+# DES-dependent object pppcrypt.o from being compiled at all — that object is the
+# only thing referencing the glibc DES primitives setkey()/encrypt(), which modern
+# glibc removed (cause of the "undefined reference to setkey/encrypt" link errors).
+# Our CHAP bypass plugin never uses MS-CHAP, so dropping it is the proper fix.
+# Some toolchains also need a libcrypto.so dev symlink present at link time.
+if [ -e /usr/lib/arm-linux-gnueabihf/libcrypto.so.1.1 ] && \
+   [ ! -e /usr/lib/arm-linux-gnueabihf/libcrypto.so ]; then
+    ln -s /usr/lib/arm-linux-gnueabihf/libcrypto.so.1.1 /usr/lib/arm-linux-gnueabihf/libcrypto.so
+    info "Created libcrypto.so symlink"
+fi
+info "Building pppd without MS-CHAP/MPPE (CHAPMS= MPPE=)..."
+make -C pppd pppd CHAPMS= MPPE= LIBS="-lcrypt -lutil -ldl"
 
 if [ -f /usr/sbin/pppd ] && [ ! -f /usr/sbin/pppd.orig ]; then
     cp /usr/sbin/pppd /usr/sbin/pppd.orig
@@ -378,7 +366,7 @@ echo "    sudo journalctl -u tomcat -f"
 echo ""
 echo "  Installed:"
 printf "    %-10s %s\n" "pppd"   "/usr/sbin/pppd (${PPPD_VERSION} patched — original: /usr/sbin/pppd.orig)"
-printf "    %-10s %s\n" "CHAP"   "/etc/ppp/randnet_chap.so"
+printf "    %-10s %s\n" "CHAP"   "/usr/lib/pppd/${PPPD_VERSION}/randnet_chap.so (+ /usr/local/lib/...)"
 printf "    %-10s %s\n" "Java"   "${JAVA_HOME}"
 printf "    %-10s %s\n" "Tomcat" "/opt/tomcat (${TOMCAT_VERSION})"
 printf "    %-10s %s\n" "Squid"  "port 3128"
