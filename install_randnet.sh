@@ -46,28 +46,52 @@ ETH0_IP=$(ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 |
 info "Detected eth0 IP: $ETH0_IP"
 
 # ─── STEP 2: Install all required packages ───────────────────────────────────
-# All packages must be installed before the port-80 iptables redirect (Step 11)
-# blocks HTTP package downloads. Do not move apt commands after Step 10.
+# All packages must be installed before the port-80 iptables redirect (Step 10)
+# blocks HTTP package downloads. Do not move apt commands after Step 9.
+#
+# The install is split into three steps to break a circular dependency: maven
+# pulls in ca-certificates-java, whose postinst deadlocks on Buster if openjdk
+# is not yet fully configured. Installing openjdk first (and fixing the deadlock)
+# before maven avoids the crash entirely.
 
-info "Installing all required packages (apt must complete before iptables redirect)..."
+info "Updating apt package lists..."
 apt-get update -y
 
-# Maven pulls in a JDK during this bulk install, and ca-certificates-java's
-# jks-keystore postinst hook deadlocks on Raspbian Buster when Java is configured
-# mid-install. Divert the hook BEFORE apt so the postinst cannot call Java; the
-# EXIT trap guarantees the divert is restored even if the install aborts.
+# STEP A: everything except openjdk and maven.
+info "STEP A: installing base packages (no Java/Maven)..."
+apt-get install -y gcc make ppp-dev libpcap-dev git wget curl squid dnsmasq
+
+# STEP B: install openjdk first and clear the Buster ca-certificates-java
+# deadlock before maven ever runs.
+info "STEP B: installing OpenJDK 11..."
 mkdir -p /etc/ssl/certs/java
-dpkg-divert --local --rename --add /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true
-trap 'dpkg-divert --local --rename --remove /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true' EXIT
+apt-get install -y openjdk-11-jdk || true
+dpkg --configure --force-depends openjdk-11-jre-headless:armhf || true
+dpkg --configure ca-certificates-java || true
+dpkg --configure -a
+apt-get install -f -y
 
-apt-get install -y \
-    gcc make ppp-dev libpcap-dev \
-    maven git wget curl squid dnsmasq
+# Verify Java 11 is actually present and working.
+if ! java -version 2>&1 | grep -q 'version "11'; then
+    echo "ERROR: Java 11 failed to install"
+    exit 1
+fi
+info "Java 11 verified: $(java -version 2>&1 | head -1)"
 
-# Restore the jks-keystore hook and run it now that the JDK is configured.
-dpkg-divert --local --rename --remove /etc/ca-certificates/update.d/jks-keystore 2>/dev/null || true
-trap - EXIT
-update-ca-certificates
+JAVA_BIN=$(which java 2>/dev/null || readlink -f /usr/bin/java 2>/dev/null || true)
+if [ -z "$JAVA_BIN" ]; then
+    error "Java installation succeeded but java binary not found on PATH"
+fi
+JAVA_HOME=$(dirname $(dirname $(readlink -f "$JAVA_BIN")))
+if [ "$JAVA_HOME" = "/" ] || [ -z "$JAVA_HOME" ]; then
+    error "JAVA_HOME detection produced invalid path: $JAVA_HOME"
+fi
+echo "JAVA_HOME=${JAVA_HOME}" >> /etc/environment
+info "JAVA_HOME=${JAVA_HOME}"
+
+# STEP C: install maven now that ca-certificates-java is fully configured.
+info "STEP C: installing Maven..."
+apt-get install -y maven
 
 info "All packages installed."
 
@@ -205,33 +229,7 @@ info "Patched pppd ${PPPD_VERSION} installed to /usr/sbin/pppd"
 cd "$SCRIPT_DIR"
 rm -rf "$BUILD_DIR"
 
-# ─── STEP 6: Install Java 11 ─────────────────────────────────────────────────
-
-info "Installing Java 11..."
-# The jks-keystore deadlock is already handled around the bulk apt install in
-# Step 2 (where Maven pulls in the JDK), so this just ensures the full JDK is
-# present.
-apt-get install -y openjdk-11-jdk
-
-# Verify Java 11 is actually present and working.
-if ! java -version 2>&1 | grep -q 'version "11'; then
-    echo "ERROR: Java 11 failed to install"
-    exit 1
-fi
-info "Java 11 verified: $(java -version 2>&1 | head -1)"
-
-JAVA_BIN=$(which java 2>/dev/null || readlink -f /usr/bin/java 2>/dev/null || true)
-if [ -z "$JAVA_BIN" ]; then
-    error "Java installation succeeded but java binary not found on PATH"
-fi
-JAVA_HOME=$(dirname $(dirname $(readlink -f "$JAVA_BIN")))
-if [ "$JAVA_HOME" = "/" ] || [ -z "$JAVA_HOME" ]; then
-    error "JAVA_HOME detection produced invalid path: $JAVA_HOME"
-fi
-echo "JAVA_HOME=${JAVA_HOME}" >> /etc/environment
-info "Java 11 installed — JAVA_HOME=${JAVA_HOME}"
-
-# ─── STEP 7: Install Apache Tomcat 9.0.118 ───────────────────────────────────
+# ─── STEP 6: Install Apache Tomcat 9.0.118 ───────────────────────────────────
 
 info "Installing Apache Tomcat ${TOMCAT_VERSION}..."
 if ! id tomcat &>/dev/null; then
@@ -279,7 +277,7 @@ WantedBy=multi-user.target
 EOF
 info "Tomcat systemd service written"
 
-# ─── STEP 8: Build and deploy ROOT.war ───────────────────────────────────────
+# ─── STEP 7: Build and deploy ROOT.war ───────────────────────────────────────
 
 SERVLET_DIR="${SCRIPT_DIR}/servlet"
 if [ ! -d "$SERVLET_DIR" ]; then
@@ -314,7 +312,7 @@ else
         || info "Tomcat not started yet — will start in the service step"
 fi
 
-# ─── STEP 9: Configure Squid ─────────────────────────────────────────────────
+# ─── STEP 8: Configure Squid ─────────────────────────────────────────────────
 
 info "Configuring Squid on port 3128..."
 cat > /etc/squid/squid.conf <<'EOF'
@@ -330,7 +328,7 @@ access_log /var/log/squid/access.log
 EOF
 info "Squid configured (allowing localhost and 10.200.0.0/16)"
 
-# ─── STEP 10: Install dnsmasq config ─────────────────────────────────────────
+# ─── STEP 9: Install dnsmasq config ─────────────────────────────────────────
 
 info "Installing dnsmasq Randnet config (domains -> $ETH0_IP)..."
 mkdir -p /etc/dnsmasq.d
@@ -358,7 +356,7 @@ else
 fi
 info "dnsmasq Randnet config installed"
 
-# ─── STEP 11: Apply iptables NAT rules ───────────────────────────────────────
+# ─── STEP 10: Apply iptables NAT rules ───────────────────────────────────────
 # Applied LAST so all preceding apt/wget/maven downloads are unaffected.
 
 info "Flushing existing nat table and applying Randnet iptables rules..."
@@ -380,7 +378,7 @@ iptables -t nat -A PREROUTING  -i ppp0 -d 172.16.10.31 -p tcp              -j DN
 
 info "iptables NAT rules applied (8 rules, DNAT -> $ETH0_IP)"
 
-# ─── STEP 12: Save iptables and create persistence service ───────────────────
+# ─── STEP 11: Save iptables and create persistence service ───────────────────
 
 info "Saving iptables rules to /etc/iptables/rules.v4..."
 mkdir -p /etc/iptables
@@ -405,7 +403,7 @@ systemctl enable iptables-restore
 systemctl start iptables-restore
 info "iptables persistence service enabled and started"
 
-# ─── STEP 13: Deploy patched dreampi module + symlink the service entrypoint ──
+# ─── STEP 12: Deploy patched dreampi module + symlink the service entrypoint ──
 # dreampi.py imports sibling modules (dcnow, config_server, netlink, ...), so it
 # must live in a module directory alongside them — /home/pi/dreampi. The systemd
 # service runs /usr/local/bin/dreampi, which we make a SYMLINK into that dir (not
@@ -471,7 +469,7 @@ else
     info "Deployed copies verified: Dreamcast Now disabled, eth0-IP DNAT + OUTPUT redirect present."
 fi
 
-# ─── STEP 14: Enable and start all services ───────────────────────────────────
+# ─── STEP 13: Enable and start all services ───────────────────────────────────
 
 info "Starting all services..."
 systemctl daemon-reload
@@ -496,7 +494,7 @@ else
     warning "Tomcat does not appear to be running — check: journalctl -u tomcat -n 50"
 fi
 
-# ─── STEP 15: Success summary ─────────────────────────────────────────────────
+# ─── STEP 14: Success summary ─────────────────────────────────────────────────
 
 echo ""
 echo "=================================================="
