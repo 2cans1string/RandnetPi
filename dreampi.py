@@ -156,6 +156,10 @@ def restart_dnsmasq():
     subprocess.call("sudo service dnsmasq restart".split())
 
 def fetch_dreampi_updates():
+    # RandnetPi: update checking disabled. The Randnet fork does not phone home to
+    # the DreamPi update server (it only fails with "Update server unavailable for
+    # the moment" log spam), so this is a no-op.
+    return
     subprocess.Popen(["python", "/home/pi/dreampi/updater/fetch_updates.py"])
 
 def update_dns_file():
