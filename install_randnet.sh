@@ -488,6 +488,12 @@ else
     info "Deployed copies verified: Dreamcast Now disabled, eth0-IP DNAT + OUTPUT redirect present."
 fi
 
+# Deploy the dreampi systemd unit from the repo so the service definition (incl.
+# the 5s USB-modem startup delay) is authoritative on the Pi.
+info "Deploying dreampi systemd service (5s USB modem startup delay)..."
+cp "${SCRIPT_DIR}/etc/systemd/system/dreampi.service" /etc/systemd/system/dreampi.service
+systemctl daemon-reload
+
 # ─── STEP 14: Enable and start all services ───────────────────────────────────
 
 info "Starting all services..."
