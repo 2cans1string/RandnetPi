@@ -66,3 +66,6 @@ servlet/target/
 # Docker
 Dockerfile
 docker-compose.yml
+
+# Local test pages
+servlet/src/main/webapp/test_index.html
