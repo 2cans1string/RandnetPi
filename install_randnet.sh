@@ -27,6 +27,10 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 info "Running as root — OK"
 
+# Safety flush - clear any stale NAT rules that could break downloads
+info "Flushing any existing NAT rules to ensure clean internet access during install..."
+iptables -t nat -F 2>/dev/null || true
+
 # ─── STEP 2: Install all required packages ───────────────────────────────────
 # All packages must be installed before the port-80 iptables redirect (Step 11)
 # blocks HTTP package downloads. Do not move apt commands after Step 10.
@@ -155,7 +159,7 @@ info "dpkg arch=${DEB_ARCH} → Adoptium arch=${ADOPTIUM_ARCH}"
 
 ADOPTIUM_URL="https://api.adoptium.net/v3/binary/latest/21/ga/linux/${ADOPTIUM_ARCH}/jdk/hotspot/normal/eclipse"
 info "Downloading Java 21 from Adoptium (${ADOPTIUM_ARCH})..."
-wget -q --show-progress -O /tmp/temurin-21.tar.gz "$ADOPTIUM_URL" \
+wget -q -L --show-progress -O /tmp/temurin-21.tar.gz "$ADOPTIUM_URL" \
     || error "Failed to download Java 21 from Adoptium"
 
 mkdir -p /opt/java
