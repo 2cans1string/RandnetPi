@@ -294,19 +294,20 @@ done
 echo ""
 echo "[6/9] Configuring iptables (server-side)..."
 
+# Port 80 → 8080 (Tomcat redirect)
 iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8080
 iptables -t nat -A OUTPUT -p tcp --dport 80 -m owner ! --uid-owner proxy -j REDIRECT --to-port 8080
 
-# DreamPi-side DNAT rules (if ppp0 is present or will be)
+# DreamPi-side DNAT rules — all Randnet IPs route to localhost (all-in-one Pi)
 iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-iptables -A FORWARD -i ppp0 -o eth0 -j ACCEPT
-iptables -A FORWARD -i eth0 -o ppp0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-for RNET_IP in 172.16.10.30 172.16.10.31 172.16.10.40; do
-    iptables -t nat -A PREROUTING -i ppp0 -d "$RNET_IP" -j DNAT \
-        --to-destination "$RANDNET_SERVER_IP"
+for RNET_IP in 172.16.10.41 172.16.10.40; do
+    iptables -t nat -A PREROUTING -i ppp0 -d "$RNET_IP" -p tcp --dport 8080 \
+        -j DNAT --to-destination 127.0.0.1:3128
 done
-iptables -t nat -A PREROUTING -i ppp0 -d 172.16.10.41 -p tcp --dport 8080 \
-    -j DNAT --to-destination "${RANDNET_SERVER_IP}:3128"
+for RNET_IP in 172.16.10.30 172.16.10.31; do
+    iptables -t nat -A PREROUTING -i ppp0 -d "$RNET_IP" \
+        -j DNAT --to-destination 127.0.0.1:8080
+done
 
 # Persist
 mkdir -p /etc/iptables
