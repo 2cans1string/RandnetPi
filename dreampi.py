@@ -445,7 +445,7 @@ def add_randnet_nat_rules():
     for ip in ["172.16.10.30", "172.16.10.31"]:
         iptables_add_if_missing([
             "iptables", "-t", "nat", "-A", "PREROUTING",
-            "-i", "ppp0", "-d", ip,
+            "-i", "ppp0", "-d", ip, "-p", "tcp",
             "-j", "DNAT", "--to-destination", "127.0.0.1:8080"
         ])
     logger.info("Randnet NAT rules added")
@@ -473,7 +473,7 @@ def remove_randnet_nat_rules():
     for ip in ["172.16.10.30", "172.16.10.31"]:
         subprocess.call([
             "iptables", "-t", "nat", "-D", "PREROUTING",
-            "-i", "ppp0", "-d", ip,
+            "-i", "ppp0", "-d", ip, "-p", "tcp",
             "-j", "DNAT", "--to-destination", "127.0.0.1:8080"
         ])
     logger.info("Randnet NAT rules removed")
