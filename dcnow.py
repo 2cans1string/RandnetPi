@@ -35,6 +35,11 @@ class DreamcastNowThread(threading.Thread):
 
     def run(self):
         def post_update():
+            # RandnetPi: DC Now reporting disabled. The original scanned syslog
+            # for DNS query[A] lines (including randnet.ne.jp lookups) and POSTed
+            # them to the DCNow API. We no-op it so it neither phones home nor
+            # interferes with Randnet domain resolution.
+            return
             if not self._service._enabled:
                 return
             global gameloft
@@ -113,18 +118,21 @@ class DreamcastNowService(object):
 
     def go_online(self, dreamcast_ip):
         logger.propagate = False
-        if not self._enabled:
-            return
-        global dcnow_run
-        dcnow_run = threading.Event()
-        self.update_mac_address(dreamcast_ip)
-        self._thread = DreamcastNowThread(self)
-        self._thread.start()
-        logger.info("DC Now Session Started")
+        # RandnetPi: DC Now domain reporting disabled. We do NOT start the
+        # reporting thread, so no syslog DNS scanning or API calls happen and
+        # randnet domain lookups are never intercepted. config_server.py still
+        # works (it only imports CONFIGURATION_FILE and scan_mac_address).
+        logger.info("DC Now reporting disabled (RandnetPi)")
+        return
 
     def go_offline(self):
-        global dcnow_run, gameloft
+        global gameloft
         gameloft = False
+        # Reporting thread is never started (go_online is a no-op), so guard
+        # against a missing thread/event to avoid a crash on disconnect.
+        if self._thread is None:
+            logger.info("DC Now Session Ended")
+            return
         dcnow_run.set()
         self._thread.stop()
         self._thread = None

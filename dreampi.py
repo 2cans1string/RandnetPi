@@ -418,6 +418,10 @@ def remove_syn_check():
     ])
 
 def add_randnet_nat_rules():
+    # DNAT targets must point at the Pi's real eth0 IP, NOT 127.0.0.1. Routing a
+    # forwarded ppp0 packet to loopback does not work reliably; live testing
+    # confirmed the eth0 IP is required.
+    eth0_ip = get_ip_address("eth0")
     # MASQUERADE outgoing traffic through eth0
     iptables_add_if_missing([
         "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"
@@ -434,23 +438,34 @@ def add_randnet_nat_rules():
         "-m", "owner", "!", "--uid-owner", "proxy",
         "-j", "REDIRECT", "--to-port", "8080"
     ])
-    # DNAT 172.16.10.41:8080 and 172.16.10.40:8080 -> Squid on localhost:3128
+    # Local/Squid port-80 traffic to the Pi's own eth0 IP -> Tomcat 8080.
+    # Final critical fix from live testing: Squid's upstream fetches of randnet
+    # pages originate locally and traverse the OUTPUT chain (not PREROUTING), so
+    # they need this destination-specific redirect.
+    if eth0_ip:
+        iptables_add_if_missing([
+            "iptables", "-t", "nat", "-A", "OUTPUT",
+            "-p", "tcp", "-d", eth0_ip, "--dport", "80",
+            "-j", "REDIRECT", "--to-ports", "8080"
+        ])
+    # DNAT 172.16.10.41:8080 and 172.16.10.40:8080 -> Squid on eth0:3128
     for ip in ["172.16.10.41", "172.16.10.40"]:
         iptables_add_if_missing([
             "iptables", "-t", "nat", "-A", "PREROUTING",
             "-i", "ppp0", "-d", ip, "-p", "tcp", "--dport", "8080",
-            "-j", "DNAT", "--to-destination", "127.0.0.1:3128"
+            "-j", "DNAT", "--to-destination", "{}:3128".format(eth0_ip)
         ])
-    # DNAT 172.16.10.30 and 172.16.10.31 -> Tomcat on localhost:8080
+    # DNAT 172.16.10.30 and 172.16.10.31 -> Tomcat on eth0:8080
     for ip in ["172.16.10.30", "172.16.10.31"]:
         iptables_add_if_missing([
             "iptables", "-t", "nat", "-A", "PREROUTING",
             "-i", "ppp0", "-d", ip, "-p", "tcp",
-            "-j", "DNAT", "--to-destination", "127.0.0.1:8080"
+            "-j", "DNAT", "--to-destination", "{}:8080".format(eth0_ip)
         ])
-    logger.info("Randnet NAT rules added")
+    logger.info("Randnet NAT rules added (eth0 IP: {})".format(eth0_ip))
 
 def remove_randnet_nat_rules():
+    eth0_ip = get_ip_address("eth0")
     subprocess.call([
         "iptables", "-t", "nat", "-D", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"
     ])
@@ -464,17 +479,23 @@ def remove_randnet_nat_rules():
         "-m", "owner", "!", "--uid-owner", "proxy",
         "-j", "REDIRECT", "--to-port", "8080"
     ])
+    if eth0_ip:
+        subprocess.call([
+            "iptables", "-t", "nat", "-D", "OUTPUT",
+            "-p", "tcp", "-d", eth0_ip, "--dport", "80",
+            "-j", "REDIRECT", "--to-ports", "8080"
+        ])
     for ip in ["172.16.10.41", "172.16.10.40"]:
         subprocess.call([
             "iptables", "-t", "nat", "-D", "PREROUTING",
             "-i", "ppp0", "-d", ip, "-p", "tcp", "--dport", "8080",
-            "-j", "DNAT", "--to-destination", "127.0.0.1:3128"
+            "-j", "DNAT", "--to-destination", "{}:3128".format(eth0_ip)
         ])
     for ip in ["172.16.10.30", "172.16.10.31"]:
         subprocess.call([
             "iptables", "-t", "nat", "-D", "PREROUTING",
             "-i", "ppp0", "-d", ip, "-p", "tcp",
-            "-j", "DNAT", "--to-destination", "127.0.0.1:8080"
+            "-j", "DNAT", "--to-destination", "{}:8080".format(eth0_ip)
         ])
     logger.info("Randnet NAT rules removed")
 
