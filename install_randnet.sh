@@ -325,7 +325,39 @@ systemctl enable iptables-restore
 systemctl start iptables-restore
 info "iptables persistence service enabled and started"
 
-# ─── STEP 13: Enable and start all services ───────────────────────────────────
+# ─── STEP 13: Deploy patched dreampi.py to the path the service runs ─────────
+# The dreampi systemd service executes a binary at a fixed path (normally
+# /usr/local/bin/dreampi). Our Randnet PPP config (auth + CHAP plugin) lives in
+# the repo's dreampi.py, so it has no effect until it IS that binary. Deploy it
+# here, before the service is (re)started below.
+
+info "Deploying patched dreampi.py to the running service path..."
+# Resolve the path the dreampi service actually executes; fall back to the
+# conventional DreamPi location if the unit can't be queried.
+DREAMPI_TARGET=""
+if systemctl cat dreampi >/dev/null 2>&1; then
+    DREAMPI_TARGET=$(systemctl cat dreampi 2>/dev/null \
+        | grep -m1 '^ExecStart=' | sed 's/^ExecStart=//' | awk '{print $1}')
+fi
+[ -n "$DREAMPI_TARGET" ] || DREAMPI_TARGET="/usr/local/bin/dreampi"
+info "dreampi service runs: $DREAMPI_TARGET"
+
+if [ ! -f "${SCRIPT_DIR}/dreampi.py" ]; then
+    warning "repo dreampi.py not found at ${SCRIPT_DIR}/dreampi.py — skipping deploy"
+else
+    # Back up the original stock dreampi once, so it can be restored later.
+    if [ -f "$DREAMPI_TARGET" ] && [ ! -f "${DREAMPI_TARGET}.original" ]; then
+        cp -p "$DREAMPI_TARGET" "${DREAMPI_TARGET}.original"
+        info "Backed up original dreampi to ${DREAMPI_TARGET}.original"
+    fi
+    mkdir -p "$(dirname "$DREAMPI_TARGET")"
+    # Our dreampi.py already carries a '#!/usr/bin/env python' shebang, so it runs
+    # directly as the service binary once it is executable.
+    install -m 755 -o root -g root "${SCRIPT_DIR}/dreampi.py" "$DREAMPI_TARGET"
+    info "Deployed patched dreampi.py to $DREAMPI_TARGET (mode 755, root:root)"
+fi
+
+# ─── STEP 14: Enable and start all services ───────────────────────────────────
 
 info "Starting all services..."
 systemctl daemon-reload
@@ -333,6 +365,14 @@ systemctl enable tomcat squid dnsmasq
 systemctl restart dnsmasq
 systemctl restart squid
 systemctl start tomcat
+
+# Restart dreampi so it picks up the freshly deployed Randnet config.
+if systemctl cat dreampi >/dev/null 2>&1; then
+    systemctl restart dreampi && info "dreampi service restarted" \
+        || warning "dreampi restart failed — check: journalctl -u dreampi -n 50"
+else
+    warning "dreampi service not installed — start manually: sudo $DREAMPI_TARGET --no-daemon"
+fi
 
 info "Waiting 5 seconds for Tomcat to initialise..."
 sleep 5
@@ -342,7 +382,7 @@ else
     warning "Tomcat does not appear to be running — check: journalctl -u tomcat -n 50"
 fi
 
-# ─── STEP 14: Success summary ─────────────────────────────────────────────────
+# ─── STEP 15: Success summary ─────────────────────────────────────────────────
 
 echo ""
 echo "=================================================="
@@ -353,6 +393,7 @@ echo "  Services:"
 printf "    %-12s %s\n" "tomcat"  "$(systemctl is-active tomcat  2>/dev/null || echo unknown)"
 printf "    %-12s %s\n" "squid"   "$(systemctl is-active squid   2>/dev/null || echo unknown)"
 printf "    %-12s %s\n" "dnsmasq" "$(systemctl is-active dnsmasq 2>/dev/null || echo unknown)"
+printf "    %-12s %s\n" "dreampi" "$(systemctl is-active dreampi 2>/dev/null || echo unknown)"
 echo ""
 echo "  Test URLs:"
 echo "    curl http://localhost:8080/servlet/GetNewVersion"
@@ -385,5 +426,6 @@ echo "             sudo iptables -t nat -F"
 echo "           To re-apply after:"
 echo "             sudo iptables-restore /etc/iptables/rules.v4"
 echo ""
-echo "  Start dreampi:  sudo python ${SCRIPT_DIR}/dreampi.py start"
+echo "  dreampi:        deployed to $DREAMPI_TARGET and restarted (logs: journalctl -u dreampi -f)"
+echo "                  original backed up to ${DREAMPI_TARGET}.original"
 echo "=================================================="
