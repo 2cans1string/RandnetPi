@@ -1,45 +1,46 @@
-# RandnetPi — Installation Guide
+# Installation Guide
 
-## Setup
+## Option 1: Pre-built Image (Quickest)
+1. Download `RandnetPi-v0.1.img.zip` from the [Releases page](https://github.com/2cans1string/RandnetPi/releases)
+2. Extract the zip to get `RandnetPi-v0.1.img`
+3. Flash to an 8GB or larger SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (choose "Use custom") or Balena Etcher
+4. Insert card into your Pi, connect ethernet, power on
+5. Wait for first boot to complete — see First Boot Timing below
+6. Connect your 64DD and dial in
 
-### 1. Run the installer
+## Option 2: Install from Source (Advanced)
+1. Flash a stock [DreamPi 2.0.1](https://dreamcastlive.net) image to your SD card
+2. Boot the Pi, connect ethernet, SSH in:
+   ssh pi@<your-pi-ip>
+   Default password: raspberry
+3. Clone the repo and run the installer:
+   git clone https://github.com/2cans1string/RandnetPi.git
+   cd RandnetPi
+   sudo bash install_randnet.sh 2>&1 | tee ~/install_log.txt
+4. The installer takes 15-30 minutes depending on Pi model
+5. Connect your 64DD and dial in
 
-```bash
-git clone https://github.com/2cans1string/RandnetPi.git
-cd RandnetPi
-sudo ./install_randnet.sh
-```
+## First Boot Timing
 
-All services (Tomcat, Squid, dnsmasq) run locally on the Pi and Randnet's
-hardcoded server IPs are routed to localhost via iptables — there is no server
-IP to configure.
+After flashing the pre-built image and powering on, allow time before attempting SSH:
 
-The installer handles:
-- pppd CHAP bypass plugin build and install
-- pppd `auth_ip_addr` patch (source build or binary patch)
-- OpenJDK 11 + Apache Tomcat 9
-- Randnet servlet WAR deployment
-- iptables rules (port 80 → 8080, DNAT for Randnet IPs)
-- Squid proxy
-- dnsmasq configuration
+| Pi Model  | Wait Time   |
+|-----------|-------------|
+| Pi 2B     | 5 minutes   |
+| Pi 3/3B+  | 3-4 minutes |
+| Pi 4      | 2 minutes   |
 
-### 2. Add your disk credentials (optional)
+What happens during first boot:
+- 0-60s — Linux boots, systemd starts services
+- 60-90s — dhcpcd obtains IP from your DHCP server
+- 90-150s — randnet-firstboot detects eth0 IP, rewrites dnsmasq and iptables, restarts services, disables itself permanently
+- 150-180s — Tomcat fully initialises
 
-`CheckMemberServlet` accepts all connections by default. To map specific
-accounts to their original Randnet IDSUF, populate `/etc/randnet/accounts.conf`
-(format `MEMBERID:MEMBERPW:DISKID:IDSUF`); otherwise a generated fallback IDSUF
-is used.
-
-### 3. Start the daemon
-
-```bash
-sudo python dreampi.py start
-```
+Tip: Use ping <pi-ip> to check when the Pi is reachable, then wait a further 30 seconds before SSH. The Pi appears on your network with hostname dreampi — check your router DHCP lease table if you do not know its IP.
 
 ## Monitoring
 
-Monitor connections:
-
-```bash
-sudo tail -f /opt/tomcat/logs/catalina.out
-```
+ssh pi@<your-pi-ip>
+sudo journalctl -u dreampi -f
+sudo journalctl -u tomcat -f
+sudo tail -f /var/log/squid/access.log
