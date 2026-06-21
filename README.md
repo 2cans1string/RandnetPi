@@ -6,20 +6,17 @@ Revival of the Nintendo 64DD Randnet online service (December 1999 – February 
 → [Installation Guide](INSTALL.md)
 
 ## Compatibility
-- Raspberry Pi Zero, 1, 2, 3, 3B+ — tested
-- Raspberry Pi 4 — tested
-- Raspberry Pi 5 — NOT supported (DreamPi incompatible)
+RandnetPi runs on any hardware supported by DreamPi 2.0.1. See [dreamcastlive.net](https://dreamcastlive.net) for the full compatibility list.
+
 - SD card: 8GB minimum
-- Requires: USB modem compatible with DreamPi, Nintendo 64 with 64DD, original Randnet disk
+- Requires: USB modem compatible with DreamPi, Nintendo 64 with 64DD, original Randnet disk with an already registered user profile. A new or unregistered disk will not be able to connect.
+- Raspberry Pi 5 is not supported by DreamPi
 
 ## Testers and Hardware Wanted
-RandnetPi has been tested on Pi 3B+ and Pi 4. We are looking for people to test on additional hardware:
 
-- Pi Zero / Zero W / Zero 2 W
-- Pi 1 / Pi 2B
+- N64 hardware setups including SummerCart64 and dual slot setups
 - Different USB modems
 
-If you test RandnetPi on any hardware not listed above, please open an issue or pull request with your results. We are also interested in hearing from anyone with:
 - Additional Randnet disks (registered or unregistered)
 - 64DD development hardware
 - Knowledge of undocumented Randnet API endpoints
@@ -59,7 +56,7 @@ Blank disk registration is partially implemented — the disk successfully regis
 ## Credits
 - DreamPi by Kazade (dreamcastlive.net) — the dial-up revival platform RandnetPi is built on
 - LuigiBlood (64dd.org) — 64DD preservation, disk image research, and documentation
-- Hard4Games — 64DD hardware and testing
+- Hard4Games — 64DD research
 - Psp9x64 — Randnet revival research
 - The DD Dev — Randnet revival research
 - GamingLegend64 and ConsoleVariations — Randnet development disk dumps

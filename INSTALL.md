@@ -8,6 +8,8 @@
 5. Wait for first boot to complete — see First Boot Timing below
 6. Connect your 64DD and dial in
 
+> **Note:** Your Randnet disk must have an existing registered user profile. A new or unregistered disk will not be able to connect.
+
 ## Option 2: Install from Source (Advanced)
 1. Flash a stock [DreamPi 2.0.1](https://dreamcastlive.net) image to your SD card
 2. Boot the Pi, connect ethernet, SSH in:
@@ -20,15 +22,13 @@
 4. The installer takes 15-30 minutes depending on Pi model
 5. Connect your 64DD and dial in
 
+> **Note:** Your Randnet disk must have an existing registered user profile. A new or unregistered disk will not be able to connect.
+
 ## First Boot Timing
 
 After flashing the pre-built image and powering on, allow time before attempting SSH:
 
-| Pi Model  | Wait Time   |
-|-----------|-------------|
-| Pi 2B     | 5 minutes   |
-| Pi 3/3B+  | 3-4 minutes |
-| Pi 4      | 2 minutes   |
+Boot time varies by Pi model — allow 2-5 minutes before attempting SSH. Check [dreamcastlive.net](https://dreamcastlive.net) for supported hardware.
 
 What happens during first boot:
 - 0-60s — Linux boots, systemd starts services
