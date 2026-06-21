@@ -1,120 +1,65 @@
 # RandnetPi
-## Nintendo 64DD Randnet online service revival
 
-> A modified DreamPi that revives the original Japanese Randnet dial-up internet service for the Nintendo 64DD (December 1999 - February 2001).
+Revival of the Nintendo 64DD Randnet online service (December 1999 – February 2001) on a Raspberry Pi.
 
----
+## Getting Started
+→ [Installation Guide](INSTALL.md)
 
-## What is this?
+## Compatibility
+- Raspberry Pi Zero, 1, 2, 3, 3B+ — tested
+- Raspberry Pi 4 — tested
+- Raspberry Pi 5 — NOT supported (DreamPi incompatible)
+- SD card: 8GB minimum
+- Requires: USB modem compatible with DreamPi, Nintendo 64 with 64DD, original Randnet disk
 
-This is a fork of [DreamPi](https://github.com/Kazade/dreampi) modified to support the Nintendo 64DD's proprietary PPP/CHAP connection and route traffic to a local Randnet revival server.
+## Testers and Hardware Wanted
+RandnetPi has been tested on Pi 3B+ and Pi 4. We are looking for people to test on additional hardware:
 
-The Nintendo 64DD used a dial-up modem and the [Randnet](https://en.wikipedia.org/wiki/Randnet) online service (Japan, 1999–2001). This project revives that service by:
+- Pi Zero / Zero W / Zero 2 W
+- Pi 1 / Pi 2B
+- Different USB modems
 
-- Accepting the 64DD's non-standard CHAP authentication via a custom pppd plugin
-- Routing hardcoded Randnet server IPs to a local revival server via iptables DNAT
-- Resolving `*.randnet.ne.jp` domains to localhost via dnsmasq
-- Running Apache Tomcat (Randnet servlets) and Squid (proxy) on the same Pi
+If you test RandnetPi on any hardware not listed above, please open an issue or pull request with your results. We are also interested in hearing from anyone with:
+- Additional Randnet disks (registered or unregistered)
+- 64DD development hardware
+- Knowledge of undocumented Randnet API endpoints
 
----
+## Research & Discoveries
 
-## Hardware Required
+This project involved analysis of original Randnet disk images and live 64DD hardware responses to reverse-engineer the Randnet servlet API.
 
-- **Raspberry Pi** (target platform Raspberry Pi 4 with DreamPi 2.0.1 Raspbian Buster) with USB modem adapter
-- **Nintendo 64** with **64DD** expansion unit
-- **Randnet disk** (original Japanese release)
+### Disk Analysis
+- Two NDD disk images were analysed: DDDiskR-DRDJ0-0.ndd (V0, registered) and NUD-DRDJ01-JPN.ndd (V1, unregistered/blank)
+- The registered disk contained stored account credentials, CHAP keys, hardcoded server IPs (172.16.10.30–172.16.10.41), and personal emails from February–April 2000
+- Network config is written to physical disk at offsets 0x3C2649E and 0x3DCCA1E during registration
+- The 64DD uses ACCESS PPP 1.3a with proprietary CHAP authentication requiring both a pppd plugin bypass and a patched auth_ip_addr() function
+- All 64DD HTTP traffic is routed through a hardcoded proxy at 172.16.10.41:8080
 
----
+### Servlet API
+Six servlets were identified and implemented from live 64DD traffic analysis:
+- `CheckMember` — member authentication
+- `GetCommunicationConfig` — network config writer (deliberately frozen at RC=9999 to prevent disk corruption until a disk restoration tool is available)
+- `GetNewVersion` — firmware/version check
+- `CheckCreditPW` — credit/payment password verification
+- `UseMail` — mail access
+- `ChangeMailPassword` — mail password change
 
-## Setup
+### Development Disk (BD113)
+A Randnet development disk (BD113 — Communication Library Verification Tool, built 1999-09-28) was identified at 64dd.org. This disk systematically tests Randnet API features and may reveal additional API calls not seen in retail disk traffic. Testing against RandnetPi is planned.
 
-### 1. Run the installer
+### Registration Flow
+Blank disk registration is partially implemented — the disk successfully registers via GetCommunicationConfig but the network config fields are not written back to physical media. Resolving this requires a tool capable of writing 64DD disk images back to physical disks (SummerCart64 is the current candidate).
 
-```bash
-git clone https://github.com/2cans1string/RandnetPi.git
-cd RandnetPi
-sudo ./install_randnet.sh
-```
-
-All services (Tomcat, Squid, dnsmasq) run locally on the Pi and Randnet's
-hardcoded server IPs are routed to localhost via iptables — there is no server
-IP to configure.
-
-The installer handles:
-- pppd CHAP bypass plugin build and install
-- pppd `auth_ip_addr` patch (source build or binary patch)
-- OpenJDK 11 + Apache Tomcat 9
-- Randnet servlet WAR deployment
-- iptables rules (port 80 → 8080, DNAT for Randnet IPs)
-- Squid proxy
-- dnsmasq configuration
-
-### 2. Add your disk credentials (optional)
-
-`CheckMemberServlet` accepts all connections by default. To map specific
-accounts to their original Randnet IDSUF, populate `/etc/randnet/accounts.conf`
-(format `MEMBERID:MEMBERPW:DISKID:IDSUF`); otherwise a generated fallback IDSUF
-is used.
-
-### 3. Start the daemon
-
-```bash
-sudo python dreampi.py start
-```
-
-Monitor connections:
-
-```bash
-sudo tail -f /opt/tomcat/logs/catalina.out
-```
-
----
-
-## Network Architecture
-
-```
-Nintendo 64DD (28.8kbps dial-up)
-     │
-     ▼
-RandnetPi (Raspberry Pi + USB modem)
-  • pppd + randnet_chap.so  — accepts 64DD CHAP auth
-  • dnsmasq                 — resolves *.randnet.ne.jp → 127.0.0.1
-  • iptables DNAT:
-      172.16.10.30 → 127.0.0.1:8080  (Tomcat)
-      172.16.10.31 → 127.0.0.1:8080  (Tomcat)
-      172.16.10.40:8080 → 127.0.0.1:3128  (Squid)
-      172.16.10.41:8080 → 127.0.0.1:3128  (Squid)
-  • Apache Tomcat 9         — Randnet servlet endpoints
-  • Squid                   — HTTP proxy for 64DD browser
-```
-
----
-
-## Servlet Endpoints
-
-| Endpoint | Purpose |
-|---|---|
-| `/servlet/CheckMember` | Account authentication |
-| `/servlet/GetCommunicationConfig` | Server config delivery |
-| `/servlet/GetNewVersion` | Version check |
-| `/servlet/CheckCreditPW` | Credit password check |
-| `/servlet/UseMail` | Mail service activation |
-| `/servlet/ChangeMailPassword` | Mail password change |
-
----
-
-> **Note — servlet implementation status**
->
-> The servlet source in `servlet/` is included and functional. The one
-> exception is `GetCommunicationConfig`, which is intentionally not implemented
-> (returns `RC=9999`) pending a safe 64DD disk-write solution. All other
-> servlets are functional.
-
----
+## Services
+- Apache Tomcat 9 — Randnet servlet backend
+- Squid proxy — 64DD HTTP proxy on port 3128
+- dnsmasq — resolves *.randnet.ne.jp and *.randnetdd.co.jp to the Pi
+- DreamPi (patched) — PPP dial-up with Randnet CHAP bypass
 
 ## Credits
-
-- **[LuigiBlood](https://github.com/LuigiBlood)** — N64DD research and reverse engineering
-- **[Psp9x64](https://github.com/Psp9x64/Randnet)** — original Randnet revival groundwork
-- **The DD Dev** (Discord) — project development and testing
-- **[Kazade](https://github.com/Kazade/dreampi)** — original DreamPi this project is forked from
+- DreamPi by Kazade (dreamcastlive.net) — the dial-up revival platform RandnetPi is built on
+- LuigiBlood (64dd.org) — 64DD preservation, disk image research, and documentation
+- Hard4Games — 64DD hardware and testing
+- Psp9x64 — Randnet revival research
+- The DD Dev — Randnet revival research
+- GamingLegend64 and ConsoleVariations — Randnet development disk dumps
